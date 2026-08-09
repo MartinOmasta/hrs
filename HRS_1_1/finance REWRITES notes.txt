@@ -1,0 +1,271 @@
+import numpy as np
+import pandas as pd
+import math
+
+# HUD Standard Household Size Factors (Adjusts 100% 4-Person AMI)
+# Base factor = 1.0 for 4-person household
+HOUSEHOLD_SIZE_FACTORS = {
+    1: 0.70,
+    2: 0.80,
+    3: 0.90,
+    4: 1.00,
+    5: 1.08,
+    6: 1.16,
+    7: 1.24,
+    8: 1.32,
+}
+
+def compute_projections(
+    initial_market_value,
+    affordability_pct_of_ami,
+    market_home_price_inflation_rate,
+    area_median_income_inflation,
+    perc_income_spent_on_housing,
+    ami_initial_four_person_dollar_amount,
+    vale_resale_fixed_index_pct,
+    household_size,
+    mortgage_rate_start,
+    mortgage_rate_resale,
+    downpayment_pct,
+    selling_cost_pct,
+    property_tax_pct_annual,
+    insurance_pct_annual,
+    hoa_monthly,
+    ground_lease_monthly,
+    other_costs_monthly,
+    property_tax_based_on_affordable_price,
+    holding_period_years,
+    vale_resale_capped,
+):
+    """
+    Computes year-by-year projections for Home Value, Debt Paydown, Cumulative Expenses,
+    and Net Wealth Proceeds at Sale comparing Unrestricted Market, VALE Fixed Index, and AMI models.
+    """
+    # Create the timeline array
+    years = np.arange(0, holding_period_years + 1)
+
+    # 1. Look up HUD household size factor
+    size_factor = HOUSEHOLD_SIZE_FACTORS.get(household_size, 1.0)
+    
+    # 2. Base Income Metrics
+    target_income_annual = (ami_initial_four_person_dollar_amount * size_factor) * (affordability_pct_of_ami / 100.0)
+    target_income_annual_available_for_housing = target_income_annual * (perc_income_spent_on_housing / 100.0)
+    target_income_monthly = target_income_annual / 12.0
+    target_income_monthly_available_for_housing = target_income_annual_available_for_housing / 12.0
+
+    # 3. Monthly Static Fees (Excluding P&I, Taxes, Insurance)
+    static_costs_monthly = hoa_monthly + ground_lease_monthly + other_costs_monthly
+
+    # 4. Standard 30-Year Mortgage Amortization Factor (360 payments)
+    r_monthly = (mortgage_rate_start / 100.0) / 12.0
+    n_months = 360
+    
+    if r_monthly > 0:
+        amortization_factor = (r_monthly * math.pow(1 + r_monthly, n_months)) / (math.pow(1 + r_monthly, n_months) - 1)
+    else:
+        amortization_factor = 1.0 / n_months
+
+    # Convert percentage rates to decimals
+    tax_rate_decimal = property_tax_pct_annual / 100.0
+    insurance_rate_decimal = insurance_pct_annual / 100.0
+    downpayment_decimal = downpayment_pct / 100.0
+
+    # 5. Insurance is calculated based on Initial Market Value (replacement cost benchmark)
+    insurance_amount_annual = initial_market_value * insurance_rate_decimal
+    insurance_amount_monthly = insurance_amount_annual / 12.0
+
+    # 6. Algebraic Entry Price Solver (Resolves circular tax/insurance loop)
+    if property_tax_based_on_affordable_price:
+        # Taxes scale with the solved affordable price
+        numerator = target_income_monthly_available_for_housing - static_costs_monthly - insurance_amount_monthly
+        denominator = ((1.0 - downpayment_decimal) * amortization_factor) + (tax_rate_decimal / 12.0)
+    else:
+        # Taxes are fixed on Initial Market Value
+        taxes_annual_market_fixed = initial_market_value * tax_rate_decimal
+        taxes_monthly_market_fixed = taxes_annual_market_fixed / 12.0
+        numerator = target_income_monthly_available_for_housing - static_costs_monthly - insurance_amount_monthly - taxes_monthly_market_fixed
+        denominator = (1.0 - downpayment_decimal) * amortization_factor
+
+    if denominator > 0 and numerator > 0:
+        affordable_purchase_price = numerator / denominator
+    else:
+        affordable_purchase_price = 0.0
+
+    # 7. Derived Initial Transaction Values
+    max_loan_amount = affordable_purchase_price * (1.0 - downpayment_decimal)
+    downpayment_amount = affordable_purchase_price * downpayment_decimal
+    
+    if property_tax_based_on_affordable_price:
+        property_taxes_amount_annual = affordable_purchase_price * tax_rate_decimal
+    else:
+        property_taxes_amount_annual = initial_market_value * tax_rate_decimal
+    property_taxes_amount_monthly = property_taxes_amount_annual / 12.0
+
+    avail_mortgage_payment_monthly = max_loan_amount * amortization_factor
+    subsidy_required = max(0.0, initial_market_value - affordable_purchase_price)
+
+    # ==========================================
+    # YEAR-BY-YEAR SIMULATION LOOPS (RESTORED)
+    # ==========================================
+    market_rate_value = []
+    vale_fixed_rate_value = []
+    ami_rate_value = []
+    
+    remaining_mortgage_balance = []
+    
+    # Net Proceeds (Cash back at sale)
+    proceeds_market = []
+    proceeds_fixed = []
+    proceeds_ami = [] 
+    
+    # Equity Gains (Wealth Built)
+    equity_gain_market = []
+    equity_gain_fixed = []
+    equity_gain_ami = [] 
+    
+    # Lifecycle Cashflow Changes (Proceeds - Holding Costs)
+    net_cashflow_change_market = []
+    net_cashflow_change_fixed = []
+    net_cashflow_change_ami = [] 
+    
+    cumulative_principal_paid = []
+    cumulative_interest_paid = []
+    cumulative_property_taxes = []
+    cumulative_insurance = []
+    cumulative_hoa = []
+    cumulative_other = []
+    cumulative_total_payments = []
+    
+    affordability_bound = []
+
+    for t in years:
+        # 1. Resale Valuations (Using robust pythonic exponentiation '**')
+        current_market_val = initial_market_value * ((1 + market_home_price_inflation_rate / 100.0) ** t)
+        current_fixed_val = affordable_purchase_price * ((1 + vale_resale_fixed_index_pct / 100.0) ** t)
+        
+        # AMI-Indexed Resale Value
+        current_ami_scalar = (1 + area_median_income_inflation / 100.0) ** t
+        current_ami_val = affordable_purchase_price * current_ami_scalar
+
+        # Optional Cap Logic: resale price cannot exceed market value
+        if vale_resale_capped:
+            current_fixed_val = min(current_fixed_val, current_market_val)
+            current_ami_val = min(current_ami_val, current_market_val)
+
+        market_rate_value.append(current_market_val)
+        vale_fixed_rate_value.append(current_fixed_val)
+        ami_rate_value.append(current_ami_val)
+
+        # 2. Mortgage Paydown Amortization (t years * 12 months)
+        m_elapsed = t * 12
+        if m_elapsed == 0:
+            loan_bal = max_loan_amount
+            cum_p_paid = 0.0
+            cum_i_paid = 0.0
+        elif m_elapsed >= 360:
+            loan_bal = 0.0
+            cum_p_paid = max_loan_amount
+            cum_i_paid = (avail_mortgage_payment_monthly * 360) - max_loan_amount
+        else:
+            # Standard Amortization Payoff Formula
+            loan_bal = max_loan_amount * (((1 + r_monthly) ** 360) - ((1 + r_monthly) ** m_elapsed)) / (((1 + r_monthly) ** 360) - 1)
+            total_payments_made = avail_mortgage_payment_monthly * m_elapsed
+            cum_p_paid = max_loan_amount - loan_bal
+            cum_i_paid = total_payments_made - cum_p_paid
+
+        remaining_mortgage_balance.append(loan_bal)
+        cumulative_principal_paid.append(cum_p_paid)
+        cumulative_interest_paid.append(cum_i_paid)
+
+        # 3. Cumulative Holding and Operating Outlays
+        cum_taxes = property_taxes_amount_monthly * 12 * t
+        cum_ins = insurance_amount_monthly * 12 * t
+        cum_hoa_dues = hoa_monthly * 12 * t
+        cum_other = other_costs_monthly * 12 * t
+
+        cumulative_property_taxes.append(cum_taxes)
+        cumulative_insurance.append(cum_ins)
+        cumulative_hoa.append(cum_hoa_dues)
+        cumulative_other.append(cum_other)
+        
+        total_payments = (avail_mortgage_payment_monthly * 12 * t) + cum_taxes + cum_ins + cum_hoa_dues + cum_other
+        cumulative_total_payments.append(total_payments)
+
+        # 4. Exit Costs & Net Sales Proceeds
+        selling_costs_market = current_market_val * (selling_cost_pct / 100.0)
+        selling_costs_fixed = current_fixed_val * (selling_cost_pct / 100.0)
+        selling_costs_ami = current_ami_val * (selling_cost_pct / 100.0) 
+
+        # Net Cash back to homeowner: Price - Loan Payoff - Selling Costs
+        net_proc_market = max(0.0, current_market_val - loan_bal - selling_costs_market)
+        net_proc_fixed = max(0.0, current_fixed_val - loan_bal - selling_costs_fixed)
+        net_proc_ami = max(0.0, current_ami_val - loan_bal - selling_costs_ami) 
+
+        proceeds_market.append(net_proc_market)
+        proceeds_fixed.append(net_proc_fixed)
+        proceeds_ami.append(net_proc_ami) 
+
+        # 5. Wealth Earned / Individual Equity Gain
+        # Net proceeds minus initial downpayment
+        equity_gain_market.append(net_proc_market - downpayment_amount)
+        equity_gain_fixed.append(net_proc_fixed - downpayment_amount)
+        equity_gain_ami.append(net_proc_ami - downpayment_amount) 
+
+        # Cumulative Net Cashflow (Proceeds minus total out-of-pocket costs)
+        net_cashflow_change_market.append(net_proc_market - downpayment_amount - total_payments)
+        net_cashflow_change_fixed.append(net_proc_fixed - downpayment_amount - total_payments)
+        net_cashflow_change_ami.append(net_proc_ami - downpayment_amount - total_payments) 
+
+        # 6. Community Affordability Index Metric
+        # Percent AMI needed for a future buyer to afford this home under resale conditions
+        affordability_bound.append(affordability_pct_of_ami * current_ami_scalar)
+
+    # ==========================================
+    # CONSTRUCT RETURN DATAFRAME
+    # ==========================================
+    financials_df = pd.DataFrame(
+        {
+            "Year": years,
+            "MarketRateValue": np.round(market_rate_value, 2),
+            "VALEFixedRateValue": np.round(vale_fixed_rate_value, 2),
+            "AMIRateValue": np.round(ami_rate_value, 2),
+            "AnnualTargetIncome": target_income_annual,
+            "AnnualTargetIncomeAvailForHousing": target_income_annual_available_for_housing,
+            "MonthlyTargetIncome": target_income_monthly,
+            "MonthlyTargetIncomeAvailForHousing": target_income_monthly_available_for_housing,
+            "StaticCostsMonthly": static_costs_monthly,
+            "MaxLoanAmount": max_loan_amount,
+            "DownpaymentAmount": downpayment_amount,
+            "PropertyTaxAmountAnnual": property_taxes_amount_annual,
+            "PropertyTaxAmountMonthly": property_taxes_amount_monthly,
+            "InsuranceAmountAnnual": insurance_amount_annual,
+            "InsuranceAmountMonthly": insurance_amount_monthly,
+            "AvailMortgagePaymentMonthly": avail_mortgage_payment_monthly,
+            "SubsidyRequired": subsidy_required,
+            # Net Proceeds
+            "ProceedsAtSaleMarket": np.round(proceeds_market, 2),
+            "ProceedsAtSaleFixed": np.round(proceeds_fixed, 2),
+            "ProceedsAtSaleAMI": np.round(proceeds_ami, 2), 
+            # Individual Equity/Wealth built
+            "EquityGainMarket": np.round(equity_gain_market, 2),
+            "EquityGainFixed": np.round(equity_gain_fixed, 2),
+            "EquityGainAMI": np.round(equity_gain_ami, 2), 
+            # Full lifecycle cashflow
+            "NetCashflowChangeMarket": np.round(net_cashflow_change_market, 2),
+            "NetCashflowChangeFixed": np.round(net_cashflow_change_fixed, 2),
+            "NetCashflowChangeAMI": np.round(net_cashflow_change_ami, 2), 
+            # Amortization details
+            "RemainingMortgageBalance": np.round(remaining_mortgage_balance, 2),
+            "CumulativePrincipalPaid": np.round(cumulative_principal_paid, 2),
+            "CumulativeInterestPaid": np.round(cumulative_interest_paid, 2),
+            # Cumulative expenses
+            "CumulativePropertyTaxes": np.round(cumulative_property_taxes, 2),
+            "CumulativeInsurance": np.round(cumulative_insurance, 2),
+            "CumulativeHOA": np.round(cumulative_hoa, 2),
+            "CumulativeOtherCosts": np.round(cumulative_other, 2),
+            "TotalPayments": np.round(cumulative_total_payments, 2),
+            "AffordabilityBound": np.round(affordability_bound, 2)
+        }
+    )
+
+    return financials_df

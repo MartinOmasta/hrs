@@ -1,0 +1,13 @@
+streamlit
+pandas
+numpy
+plotly
+openpyxl
+requests
+sqlalchemy
+gspread
+oauth2client
+
+# Google auth libraries for service account access
+google-auth
+google-auth-oauthlib
