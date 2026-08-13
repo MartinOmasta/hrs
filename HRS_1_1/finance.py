@@ -5,7 +5,7 @@ import streamlit as st
 
 
 # Throughout this document if a variable has a:
-# Prefix of 'iniital' - then it is referring to the time the home is 1st purchased
+# Prefix of 'initial' - then it is referring to the time the home is 1st purchased
 # Prefix of 'resale' - then it is referring to the time that that 'initial' home is sold to a second buyer
 # Contains 'market' - then it is referring to homes with costs associated with the capitalist speculative market
 # Contains 'fixed' - then it is referring to a fixed index resale formula (i.e, pinned to a fixed number say 1.5%)
@@ -52,6 +52,7 @@ def compute_projections(
     initial_ground_lease_monthly,
     initial_pmi_financing_fees_monthly,
     property_tax_based_on_affordable_price,
+    insurance_based_on_affordable_price,
     initial_downpayment_assistance_amount,
     initial_downpayment_assistance_covers_buyer_contribution_check,
     initial_affordability_gap_amount,
@@ -64,23 +65,6 @@ def compute_projections(
 ):
     """
     Compute year-by-year projections for market value vs fixed resale formula.
-
-    Notes / assumptions (TENTATIVE - please review and refine):
-    - Market value grows at `market_inflation_rate` compounded annually.
-    - Fixed price follows `initial_market_value * (1 + fixed_index_rate)^t`.
-    - Affordability price bound is calculated from household-size-adjusted AMI:
-      For a given initial_household_size and initial_affordability_pct_of_ami, the bound is:
-      `(ami_initial * household_size_factor) * affordability_pct * year_index^(inflation_rate)`
-      This allows a "next buyer" to understand what the home would cost at different affordability tiers.
-    - Mortgage costs and net proceeds: net_proceeds = sale_price - remaining_mortgage_balance - selling_costs - operating_costs.
-      Remaining mortgage balance uses simple 30-year amortization (no PMI, escrow, or property-tax-in-escrow modeling).
-    - Property taxes, insurance, HOA, and other costs are annualized and deducted at sale.
-    
-    Domain flags:
-    - Property tax rate (1.2%) is annual on market value; may need to account for Prop 2.5 (Mass.) or other state caps.
-    - Ground lease ($50) is currently treated as a fixed annual cost; may need to model as escalating rent.
-    - CAP ensures resale formula values do not exceed market rate home prices in the event that speculative market rates drop for extended periods.
-    - Market share cap prevents fixed price from rising above market value * cap_pct.
     """
 
     # Calculate the annual resale value of the home for 1) Market Rate; 2) VALE Fixed Rate; 3) AMI Rate
@@ -119,83 +103,70 @@ def compute_projections(
     initial_property_tax_rate_annual_decimal = (initial_property_tax_pct_annual / 100.0)
     initial_insurance_rate_annual_decimal = (initial_insurance_pct_annual / 100.0)
     initial_downpayment_rate_decimal = (initial_downpayment_pct / 100.0)
-
-    # Insurance
     INSURANCE_AJUSTMENT_FACTOR = 0.70588
-    initial_insurance_amount_annual = math.ceil((initial_market_value * initial_insurance_rate_annual_decimal) * INSURANCE_AJUSTMENT_FACTOR)
-    initial_insurance_amount_monthly = initial_insurance_amount_annual / 12.0
 
     # ==========================================
     # PASS 1: Calculate Price Assuming NO PMI
     # ==========================================
-    base_budget = initial_target_income_monthly_available_for_housing - initial_static_costs_monthly_no_pmi - initial_insurance_amount_monthly
-
-    if initial_downpayment_assistance_covers_buyer_contribution_check:
-        # DPA covers the % requirement. It does NOT increase total purchasing power.
-        base_numerator = base_budget
+    base_budget = initial_target_income_monthly_available_for_housing - initial_static_costs_monthly_no_pmi
+    
+    # Handle Insurance Dependency
+    if insurance_based_on_affordable_price:
+        ins_term = (initial_insurance_rate_annual_decimal * INSURANCE_AJUSTMENT_FACTOR / 12.0)
     else:
-        # DPA is EXTRA equity on top of the buyer's %. It INCREASES total purchasing power.
-        base_numerator = base_budget + (initial_downpayment_assistance_amount * amortization_factor)
+        ins_term = 0.0
+        initial_insurance_amount_annual = math.ceil((initial_market_value * initial_insurance_rate_annual_decimal) * INSURANCE_AJUSTMENT_FACTOR)
+        initial_insurance_amount_monthly = initial_insurance_amount_annual / 12.0
+        base_budget -= initial_insurance_amount_monthly
 
+    # Handle Tax Dependency
     if property_tax_based_on_affordable_price:
-        denominator = ((1.0 - initial_downpayment_rate_decimal) * amortization_factor) + (initial_property_tax_rate_annual_decimal / 12.0)
-        numerator_pass_1 = base_numerator
+        tax_term = (initial_property_tax_rate_annual_decimal / 12.0)
     else:
+        tax_term = 0.0
         initial_property_taxes_amount_annual = math.ceil(initial_market_value * initial_property_tax_rate_annual_decimal)
         initial_property_taxes_amount_monthly = math.ceil(initial_property_taxes_amount_annual / 12.0)
-        denominator = (1.0 - initial_downpayment_rate_decimal) * amortization_factor
-        numerator_pass_1 = base_numerator - initial_property_taxes_amount_monthly
+        base_budget -= initial_property_taxes_amount_monthly
 
+    if initial_downpayment_assistance_covers_buyer_contribution_check:
+        base_numerator = base_budget
+    else:
+        base_numerator = base_budget + (initial_downpayment_assistance_amount * amortization_factor)
+
+    denominator = ((1.0 - initial_downpayment_rate_decimal) * amortization_factor) + tax_term + ins_term
+    numerator_pass_1 = base_numerator
+    
     P_pass_1 = numerator_pass_1 / denominator if (denominator > 0 and numerator_pass_1 > 0) else 0.0
 
     # ==========================================
     # EQUITY CHECK & PASS 2 (Apply PMI if needed)
     # ==========================================
-    
     def calculate_downpayments(price):
-        """Helper to cleanly apply the checkbox logic to any calculated price."""
         required_downpayment = math.ceil(price * initial_downpayment_rate_decimal)
-        
         if initial_downpayment_assistance_covers_buyer_contribution_check:
-            # Buyer pays the requirement MINUS the DPA, but never less than $500
             buyer_cash = max(500.0, required_downpayment - initial_downpayment_assistance_amount)
         else:
-            # Buyer pays the full requirement, DPA is extra
             buyer_cash = max(500.0, required_downpayment)
-            
         total_equity = buyer_cash + initial_downpayment_assistance_amount
         return buyer_cash, total_equity
 
-    # 1. Calculate Pass 1 cash down & equity
     buyer_cash_pass_1, total_equity_pass_1 = calculate_downpayments(P_pass_1)
-    
-    # 2. Check total equity percentage
     initial_buyer_equity_pct = total_equity_pass_1 / P_pass_1 if P_pass_1 > 0 else 0.0
 
-    # 3. Apply PMI logic
     if initial_buyer_equity_pct >= 0.20 and not using_FHA_loan:
-        # Avoids PMI! Keep Pass 1 results.
         initial_affordable_purchase_price = P_pass_1
         applied_pmi_monthly = 0.0
-        
         initial_buyer_cash_contribution_downpayment = buyer_cash_pass_1
         initial_total_downpayment_amount_affordable = total_equity_pass_1
-        
     else:
-        # Hit with PMI. Subtract PMI from numerator and recalculate.
         applied_pmi_monthly = initial_pmi_financing_fees_monthly
         numerator_pass_2 = numerator_pass_1 - applied_pmi_monthly
         P_pass_2 = numerator_pass_2 / denominator if (denominator > 0 and numerator_pass_2 > 0) else 0.0
         
         initial_affordable_purchase_price = P_pass_2
-        
-        # Recalculate downpayments with the new, slightly lower purchase price
         buyer_cash_pass_2, total_equity_pass_2 = calculate_downpayments(P_pass_2)
-        
         initial_buyer_cash_contribution_downpayment = buyer_cash_pass_2
         initial_total_downpayment_amount_affordable = total_equity_pass_2
-        
-        # Update equity percentage for records
         initial_buyer_equity_pct = total_equity_pass_2 / P_pass_2 if P_pass_2 > 0 else 0.0
 
     # ==========================================
@@ -203,26 +174,24 @@ def compute_projections(
     # ==========================================
     initial_pmi_financing_fees_annually = applied_pmi_monthly * 12
     initial_static_costs_monthly = initial_static_costs_monthly_no_pmi + applied_pmi_monthly
-    
-    #initial_downpayment_amount_affordable = initial_buyer_cash_contribution_downpayment
-    #initial_total_downpayment_amount_affordable = initial_total_buyer_equity_dollars
-    
-    # Loan is whatever is left over after the Buyer Cash and DPA Grant are applied
     initial_max_loan_amount_affordable = initial_affordable_purchase_price - initial_total_downpayment_amount_affordable
 
+    # Finalize Tax
     if property_tax_based_on_affordable_price:
         initial_property_taxes_amount_annual = math.ceil(initial_affordable_purchase_price * initial_property_tax_rate_annual_decimal)
         initial_property_taxes_amount_monthly = math.ceil(initial_property_taxes_amount_annual / 12.0)
+
+    # Finalize Insurance
+    if insurance_based_on_affordable_price:
+        initial_insurance_amount_annual = math.ceil((initial_affordable_purchase_price * initial_insurance_rate_annual_decimal) * INSURANCE_AJUSTMENT_FACTOR)
+        initial_insurance_amount_monthly = initial_insurance_amount_annual / 12.0
 
     # Subsidies Calculation
     initial_subsidy_required = max(0.0, initial_market_value - initial_affordable_purchase_price)
     initial_remaining_subsidy_required = max(0.0, initial_subsidy_required - initial_affordability_gap_amount)
 
-    # 1. Calculate the other housing costs first
     initial_total_other_housing_annual = math.ceil((initial_static_costs_monthly * 12) + initial_property_taxes_amount_annual + initial_insurance_amount_annual)
     initial_total_other_housing_monthly = initial_total_other_housing_annual / 12
-
-    # 2. Redefine "Available for mortgage payment" conceptually (Target Income Budget - Other Costs)
     initial_avail_mortgage_payment_monthly_affordable = initial_target_income_monthly_available_for_housing - initial_total_other_housing_monthly
 
     # END Section A: Figure out Affordable Price ##############################################################
@@ -256,7 +225,7 @@ def compute_projections(
     initial_mortgage_market = initial_market_rate_value[0] - initial_downpayment_amount_market
     
     initial_mortgage_affordable_closing_costs = initial_affordable_purchase_price * (initial_closing_cost_pct / 100.0)
-    initial_mortgage_affordable = initial_max_loan_amount_affordable #Already has downpayment subtracted above initial_total_downpayment_amount_affordable
+    initial_mortgage_affordable = initial_max_loan_amount_affordable 
     initial_affordable_purchase_price_paid_by_resident_owner = initial_mortgage_affordable + initial_total_downpayment_amount_affordable
     
     # End Calculate both Market and Afforable Mortgage ###########
@@ -298,7 +267,6 @@ def compute_projections(
         balance_initial_mortgage_affordable -= principal_payment_affordable
         
         # Store values
-
         if ((current_month_inspected + 1) % 12 == 0):
             initial_monthly_total_interest_payment_market = initial_monthly_total_interest_payment_market + interest_payment_market
             initial_monthly_total_principal_payment_market = initial_monthly_total_principal_payment_market + principal_payment_market
@@ -364,7 +332,7 @@ def compute_projections(
     # ------------------------------------------------
     # 1. Cumulative Costs & Net Proceeds (Wealth Built)
     # ------------------------------------------------
-    # Calculate ongoing property taxes (changes based on if taxes escalate with market value or affordable price)
+    # Calculate ongoing property taxes 
     annual_property_tax_market = initial_market_rate_value * initial_property_tax_rate_annual_decimal
     if property_tax_based_on_affordable_price:
         annual_property_tax_fixed = initial_vale_fixed_rate_value * initial_property_tax_rate_annual_decimal
@@ -377,8 +345,16 @@ def compute_projections(
     resale_cumulative_property_tax_ami = np.cumsum(annual_property_tax_ami)
     resale_cumulative_property_tax_market = np.cumsum(annual_property_tax_market)
 
-    # Base Market Insurance Calculation
+    # Ongoing Market Insurance
     annual_insurance_market = np.ceil((initial_market_rate_value * initial_insurance_rate_annual_decimal) * INSURANCE_AJUSTMENT_FACTOR)
+    
+    # Ongoing Affordable Insurance
+    if insurance_based_on_affordable_price:
+        annual_insurance_fixed = np.ceil((initial_vale_fixed_rate_value * initial_insurance_rate_annual_decimal) * INSURANCE_AJUSTMENT_FACTOR)
+        annual_insurance_ami = np.ceil((initial_ami_rate_value * initial_insurance_rate_annual_decimal) * INSURANCE_AJUSTMENT_FACTOR)
+    else:
+        annual_insurance_fixed = annual_insurance_market
+        annual_insurance_ami = annual_insurance_market
 
     # Evaluate FHA/Conventional PMI Drop-off Rules
     realistic_pmi_monthly_array = np.zeros(initial_holding_period_years)
@@ -398,18 +374,23 @@ def compute_projections(
 
     # COST REALISM TOGGLE LOGIC
     if cost_model == "Idealized (Flat Affordability)":
-        resale_annual_insurance_array = initial_insurance_amount_annual * initial_ami_scalar
+        resale_annual_insurance_array_fixed = initial_insurance_amount_annual * initial_ami_scalar
+        resale_annual_insurance_array_ami = initial_insurance_amount_annual * initial_ami_scalar
         resale_hoa_monthly_array = initial_hoa_monthly * initial_ami_scalar
         resale_ground_lease_monthly_array = initial_ground_lease_monthly * initial_ami_scalar
         resale_pmi_monthly_array = applied_pmi_monthly * initial_ami_scalar
     else:
         # Realistic Model
-        resale_annual_insurance_array = annual_insurance_market
+        resale_annual_insurance_array_fixed = annual_insurance_fixed
+        resale_annual_insurance_array_ami = annual_insurance_ami
         resale_hoa_monthly_array = np.full(initial_holding_period_years, initial_hoa_monthly)
         resale_ground_lease_monthly_array = np.full(initial_holding_period_years, initial_ground_lease_monthly)
         resale_pmi_monthly_array = realistic_pmi_monthly_array
         
-    resale_cumulative_insurance = np.cumsum(resale_annual_insurance_array) 
+    resale_cumulative_insurance_fixed = np.cumsum(resale_annual_insurance_array_fixed)
+    resale_cumulative_insurance_ami = np.cumsum(resale_annual_insurance_array_ami)
+    resale_cumulative_insurance_market = np.cumsum(annual_insurance_market)
+    
     resale_cumulative_hoa = np.cumsum(resale_hoa_monthly_array * 12)
     resale_cumulative_ground_lease = np.cumsum(resale_ground_lease_monthly_array * 12)
 
@@ -451,7 +432,7 @@ def compute_projections(
             resale_net_wealth_built_fixed 
             - np.cumsum(initial_interest_per_period_affordable)
             - resale_cumulative_property_tax_fixed 
-            - resale_cumulative_insurance 
+            - resale_cumulative_insurance_fixed 
             - resale_cumulative_hoa 
             - resale_cumulative_ground_lease
             + cumulative_freed_cash_affordable
@@ -461,7 +442,7 @@ def compute_projections(
             resale_net_wealth_built_ami
             - np.cumsum(initial_interest_per_period_affordable)
             - resale_cumulative_property_tax_ami 
-            - resale_cumulative_insurance 
+            - resale_cumulative_insurance_ami 
             - resale_cumulative_hoa 
             - resale_cumulative_ground_lease
             + cumulative_freed_cash_affordable
@@ -471,7 +452,7 @@ def compute_projections(
             resale_net_wealth_built_market
             - np.cumsum(initial_interest_per_period_market)
             - resale_cumulative_property_tax_market 
-            - resale_cumulative_insurance 
+            - resale_cumulative_insurance_market 
             - resale_cumulative_hoa 
             + cumulative_freed_cash_market
             # Note: No ground lease subtracted here for market!
@@ -480,7 +461,6 @@ def compute_projections(
     # ------------------------------------------------
     # 2. CLT's Equity & Net Proceeds
     # ------------------------------------------------
-    # The CLT's total stake in the property remains the gap between the unconstrained market value and the restricted affordable price
     initial_clt_equity_amount = initial_subsidy_required 
     resale_clt_equity_amount_fixed = initial_market_rate_value - initial_vale_fixed_rate_value
     resale_clt_equity_amount_ami = initial_market_rate_value - initial_ami_rate_value
@@ -504,7 +484,7 @@ def compute_projections(
     resale_monthly_housing_costs_fixed = (
         resale_monthly_mortgage_payment_fixed 
         + (annual_property_tax_fixed / 12.0) 
-        + (resale_annual_insurance_array / 12.0) 
+        + (resale_annual_insurance_array_fixed / 12.0) 
         + resale_hoa_monthly_array 
         + resale_ground_lease_monthly_array 
         + resale_pmi_monthly_array
@@ -519,7 +499,7 @@ def compute_projections(
     resale_monthly_housing_costs_ami = (
         resale_monthly_mortgage_payment_ami 
         + (annual_property_tax_ami / 12.0) 
-        + (resale_annual_insurance_array / 12.0) 
+        + (resale_annual_insurance_array_ami / 12.0) 
         + resale_hoa_monthly_array 
         + resale_ground_lease_monthly_array 
         + resale_pmi_monthly_array
@@ -589,7 +569,7 @@ def compute_projections(
 
             "ResaleCumMortgagePayment_P_And_I_Afforable": np.round(resale_cumulative_mortgage_payments_affordable,2),
             "ResaleCumPropertyTaxFixed": np.round(resale_cumulative_property_tax_fixed, 2),
-            "ResaleCumInsurance": np.round(resale_cumulative_insurance, 2),
+            "ResaleCumInsurance": np.round(resale_cumulative_insurance_fixed, 2),
             "ResaleCumHOA": np.round(resale_cumulative_hoa, 2),
             "ResaleCumGroundLease": np.round(resale_cumulative_ground_lease, 2),
             "ResaleSellingCostsFixed": np.round(resale_selling_costs_fixed, 2),
