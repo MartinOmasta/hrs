@@ -4,7 +4,6 @@ import numpy as np
 import math
 import plotly.graph_objects as go
 from finance import compute_projections, HOUSEHOLD_SIZE_FACTORS
-from data_loader import load_data, load_google_sheet_with_service_account
 
 
 st.set_page_config(page_title="VALE Housing Resale Simulator", layout="wide")
@@ -54,7 +53,7 @@ st.sidebar.markdown(
 )
 
 # Throughout this document if a variable has a:
-# Prefix of 'iniital' - then it is referring to the time the home is 1st purchased
+# Prefix of 'initial' - then it is referring to the time the home is 1st purchased
 # Prefix of 'resale' - then it is referring to the time that that 'initial' home is sold to a second buyer
 # Contains 'market' - then it is referring to homes with costs associated with the capitalist speculative market
 # Contains 'fixed' - then it is referring to a fixed index resale formula (i.e, pinned to a fixed number say 1.5%)
@@ -71,7 +70,6 @@ with st.sidebar.expander("**🏡 Property Value - Initial & Ongoing**", expanded
 with st.sidebar.expander("**📈 VALE Program Tiers & Household**", expanded=True):
     initial_ami_four_person_dollar_amount = st.number_input("100% Area Median Income for 4-person household in Property's Area", value=93100, step=100)
     initial_vale_resale_fixed_index_pct = st.number_input("Fixed Index % Increase (tier)", value=3.0, step=0.1)
-    #market_share_cap = st.number_input("Market Share Cap %", value=25.0, step=1.0)
     initial_household_size = st.select_slider("Target household size (for affordability calculation)", options=[1, 2, 3, 4, 5, 6, 7, 8], value=4)
 
 with st.sidebar.expander("**💸 Financing & Costs**", expanded=True):
@@ -91,6 +89,7 @@ with st.sidebar.expander("**⚖️ Taxes & Fees**", expanded=True):
     initial_ground_lease_monthly = st.number_input("Ground lease monthly $", value=50)
     initial_pmi_financing_fees_monthly = st.number_input("PMI or Additional monthly fees $", value=100.0)
     property_tax_based_on_affordable_price = st.checkbox("**Tax Basis**: Is the Property Tax calculated based on the Affordable Price?", value=True)
+    insurance_based_on_affordable_price = st.checkbox("**Insurance Basis**: Is Insurance calculated based on the Affordable Price?", value=False)
 
 with st.sidebar.expander("**🫴🪙Outside Subsidy**", expanded=True):
     initial_downpayment_assistance_amount = st.number_input("Downpayment Assistance (DPA) $ Amount", value=0, step=10)
@@ -120,7 +119,7 @@ with st.sidebar.expander("**⚙️Simulation**", expanded=True):
         "General Economic Inflation Rate (%)", 
         min_value=0.0, 
         max_value=15.0, 
-        value=2.0, 
+        value=2.5, 
         step=0.1
     )
 # END SECTION 1 #############################################################################################
@@ -152,6 +151,7 @@ proj = compute_projections(
     initial_ground_lease_monthly=initial_ground_lease_monthly,
     initial_pmi_financing_fees_monthly=initial_pmi_financing_fees_monthly,
     property_tax_based_on_affordable_price=property_tax_based_on_affordable_price,
+    insurance_based_on_affordable_price=insurance_based_on_affordable_price,
     initial_downpayment_assistance_amount=initial_downpayment_assistance_amount,
     initial_downpayment_assistance_covers_buyer_contribution_check=initial_downpayment_assistance_covers_buyer_contribution_check,
     initial_affordability_gap_amount=initial_affordability_gap_amount,
@@ -215,7 +215,7 @@ initial_total_other_housing_monthly = float(proj["InitialTotalOtherHousingMonthl
 def render_affordability_subsidy_widget(data: dict):
     """
     Renders an HTML/CSS spreadsheet-style widget matching the visual design
-    and layout of image_9a4dfd.png, now complete with interactive info hovers.
+    and layout, now complete with interactive info hovers.
     """
     
     # Currency and Percentage Formatting Helpers
@@ -229,7 +229,7 @@ def render_affordability_subsidy_widget(data: dict):
             return "—"
         return f"{val * 100:.2f}%"
 
-    # Custom CSS to mimic the spreadsheet in image_9a4dfd.png
+    # Custom CSS to mimic the spreadsheet
     style_block = """
     <style>
         .sheet-container {
@@ -353,7 +353,7 @@ def render_affordability_subsidy_widget(data: dict):
     </style>
     """
 
-    # Inline HTML structure mapping exactly to image_9a4dfd.png with descriptive tooltips
+    # Inline HTML structure mapping exactly with descriptive tooltips
     html_content = f"""
     {style_block}
     <div class="sheet-container">
