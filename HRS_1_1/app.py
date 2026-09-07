@@ -1,27 +1,37 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import math
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import io
 from finance import compute_projections, HOUSEHOLD_SIZE_FACTORS
-
 
 st.set_page_config(page_title="VALE Housing Resale Simulator", layout="wide")
 
 st.markdown("""
     <style>
-        /* Target the main container and override the default Streamlit max-width */
         [data-testid="stAppViewContainer"] .main .block-container {
-            max-width: 98% !important;
-            padding-top: 2rem !important;
-            padding-bottom: 2rem !important;
-            padding-left: 1rem !important;
-            padding-right: 1rem !important;
+            max-width: 98% !important; padding-top: 2rem !important;
+            padding-bottom: 2rem !important; padding-left: 1rem !important; padding-right: 1rem !important;
+        }
+        div[data-testid="stPlotlyChart"] { width: 100% !important; }
+        [data-testid="stSidebar"] [data-testid="stExpander"] summary,
+        [data-testid="stSidebar"] [data-testid="stExpander"] summary *,
+        [data-testid="stSidebar"] [data-testid="stExpander"] .streamlit-expanderHeader,
+        [data-testid="stSidebar"] [data-testid="stExpander"] .streamlit-expanderHeader * {
+            font-size: 1.3rem !important; font-weight: 800 !important; color: #1A1A1A !important;
+        }
+        /* Custom Tooltip styling for Streamlit native sidebar tooltips */
+        div[data-testid="stTooltipContent"] {
+            background-color: #2D3748 !important; /* Sleek slate-dark gray */
+            color: #FFFFFF !important;
         }
         
-        /* Optional: If you want the charts to fill the column fully */
-        div[data-testid="stPlotlyChart"] {
-            width: 100% !important;
+        /* OVERRIDE: Force dropdown menus to expand to the width of their content */
+        div[data-baseweb="popover"] > div {
+            width: max-content !important;
+            white-space: nowrap !important;
+            min-width: 100% !important; /* Ensures it never gets smaller than the collapsed selectbox */
         }
     </style>
     """, unsafe_allow_html=True)
@@ -29,693 +39,549 @@ st.markdown("""
 st.title("VALE Housing Resale Simulator (HRS) - Prototype")
 
 
-#############################################################################################################
-# Section 1: Setup UI for needed inputs for calculations
-#############################################################################################################
-#Injects custom styling directly into Streamlit to make expander headers bold, clean, and larger
-st.sidebar.markdown(
-    """
-    <style>
-        /* FIX: We drop 'div' and target the attribute directly because Streamlit uses 
-           a <section> element for the sidebar. We also target 'summary' and legacy expander headers.
-        */
-        [data-testid="stSidebar"] [data-testid="stExpander"] summary,
-        [data-testid="stSidebar"] [data-testid="stExpander"] summary *,
-        [data-testid="stSidebar"] [data-testid="stExpander"] .streamlit-expanderHeader,
-        [data-testid="stSidebar"] [data-testid="stExpander"] .streamlit-expanderHeader * {
-            font-size: 1.3rem !important;    /* Explicit pixel scaling for dramatic change */
-            font-weight: 800 !important;    /* Extra bold weight */
-            color: #1A1A1A !important;      /* Clean dark charcoal */
-        }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
 
-# Throughout this document if a variable has a:
-# Prefix of 'initial' - then it is referring to the time the home is 1st purchased
-# Prefix of 'resale' - then it is referring to the time that that 'initial' home is sold to a second buyer
-# Contains 'market' - then it is referring to homes with costs associated with the capitalist speculative market
-# Contains 'fixed' - then it is referring to a fixed index resale formula (i.e, pinned to a fixed number say 1.5%)
-# Contains 'ami" - then it is referring to an AMI based index resale formula (i.e, it rises & falls based on the HUD produced AMI number)
-# Contains 'affordable' - then it is referring to any home - either 'fixed' or 'ami' that meet affordability criteria
+#############################################################################################################
+# Section 1: Sidebar Setup
+#############################################################################################################
+st.sidebar.markdown("*Note: Base values here are overridden by any identical variables established in the Scenario Matrix.*")
 
 with st.sidebar.expander("**🏡 Property Value - Initial & Ongoing**", expanded=True):
     initial_market_value = st.number_input("Property Asking Price $", value=348000, format="%d", help="Unrestricted open-market appraisal or initial listing price.")
     initial_affordability_pct_of_ami = st.number_input("Prospective Buyer Income Target (% of AMI)", value=80.0, step=10.0, help="Based on regional HUD AMI tables for this Property's area - what is the intended range that this property it targeted for?")
-    initial_market_home_price_inflation_rate = st.number_input("Home price inflation %", value=7.1, step=0.1)
-    initial_area_median_income_inflation = st.number_input("Area Median Income (AMI) inflation %", value=4.0, step=0.1)
-    initial_perc_income_spent_on_housing = st.number_input("Percentage of Income Spent on Housing %", value=30, step=1)
+    initial_market_home_price_inflation_rate = st.number_input("Home price inflation %", value=7.1, step=0.1, help="Expected annual percentage increase in open-market home prices.")
+    initial_area_median_income_inflation = st.number_input("Area Median Income (AMI) inflation %", value=4.0, step=0.1, help="Expected annual percentage increase in the Area Median Income (AMI).")
+    initial_perc_income_spent_on_housing = st.number_input("Percentage of Income Spent on Housing %", value=30, step=1, help="The maximum percentage of gross household income allowed to be spent on housing costs (typically 30%).")
 
 with st.sidebar.expander("**📈 VALE Program Tiers & Household**", expanded=True):
-    initial_ami_four_person_dollar_amount = st.number_input("100% Area Median Income for 4-person household in Property's Area", value=93100, step=100)
-    initial_vale_resale_fixed_index_pct = st.number_input("Fixed Index % Increase (tier)", value=3.0, step=0.1)
-    initial_household_size = st.select_slider("Target household size (for affordability calculation)", options=[1, 2, 3, 4, 5, 6, 7, 8], value=4)
+    initial_ami_four_person_dollar_amount = st.number_input("100% Area Median Income for 4-person household", value=93100, step=100, help="The baseline 100% AMI dollar amount for a household of four in the local region.")
+    initial_vale_resale_fixed_index_pct = st.number_input("Fixed Index % Increase (tier)", value=3.0, step=0.1, help="The fixed annual percentage rate at which the restricted resale price increases.")
+    initial_household_size = st.select_slider("Target household size", options=[1, 2, 3, 4, 5, 6, 7, 8], value=4, help="The size of the household used to adjust the AMI for calculating affordability.")
 
 with st.sidebar.expander("**💸 Financing & Costs**", expanded=True):
-    initial_mortgage_rate = st.number_input("Mortgage rate (Initial Buyer)", value=6.0, step=0.1)
-    resale_mortgage_rate = st.number_input("Mortgage rate (Resale Buyer)", value=6.0, step=0.1)
-    initial_downpayment_pct = st.number_input("Downpayment %", value=5.0, step=0.1)
-    initial_closing_cost_pct = st.number_input("Closing Costs %", value=3.0, step=0.1)
-    resale_selling_cost_pct = st.number_input("Selling cost %", value=7.0, step=0.1)
-    types_of_mortgage_terms = [10, 15, 20, 30, 40]
-    initial_length_of_mortgage_years = st.selectbox(label="Length of Mortage (Years)", options=types_of_mortgage_terms, index=3)
-    using_FHA_loan = st.checkbox("**FHA Loan**: Buyer is using FHA Loan", value=False)
+    initial_mortgage_rate = st.number_input("Mortgage rate (Initial Buyer)", value=6.0, step=0.1, help="The interest rate on the first buyer's mortgage loan.")
+    resale_mortgage_rate = st.number_input("Mortgage rate (Resale Buyer)", value=6.0, step=0.1, help="The projected interest rate on a future buyer's mortgage loan.")
+    initial_downpayment_pct = st.number_input("Downpayment %", value=5.0, step=0.1, help="The percentage of the purchase price the buyer pays upfront.")
+    initial_closing_cost_pct = st.number_input("Closing Costs %", value=3.0, step=0.1, help="Estimated buyer closing costs as a percentage of the purchase price.")
+    resale_selling_cost_pct = st.number_input("Selling cost %", value=7.0, step=0.1, help="Estimated costs (e.g., realtor fees, repairs) for the seller at resale, as a percentage of the sale price.")
+    initial_length_of_mortgage_years = st.selectbox(label="Length of Mortage (Years)", options=[10, 15, 20, 30, 40], index=3, help="The term length of the mortgage loan in years.")
+    using_FHA_loan = st.checkbox("**FHA Loan**: Buyer is using FHA Loan", value=False, help="Check if the buyer is utilizing an FHA loan (affects PMI drop-off rules).")
 
 with st.sidebar.expander("**⚖️ Taxes & Fees**", expanded=True):
-    initial_property_tax_pct_annual = st.number_input("Property tax % Annual", value=1.570, step=0.001, format="%.3f")
-    initial_insurance_pct_annual = st.number_input("Insurance % Annual", value=0.470, step=0.001, format="%.3f")
-    initial_hoa_monthly = st.number_input("HOA monthly $", value=0)
-    initial_ground_lease_monthly = st.number_input("Ground lease monthly $", value=50)
-    initial_pmi_financing_fees_monthly = st.number_input("PMI or Additional monthly fees $", value=100.0)
-    property_tax_based_on_affordable_price = st.checkbox("**Tax Basis**: Is the Property Tax calculated based on the Affordable Price?", value=True)
-    insurance_based_on_affordable_price = st.checkbox("**Insurance Basis**: Is Insurance calculated based on the Affordable Price?", value=False)
+    initial_property_tax_pct_annual = st.number_input("Property tax % Annual", value=1.570, step=0.001, format="%.3f", help="The annual property tax rate as a percentage of the assessed value.")
+    initial_insurance_pct_annual = st.number_input("Insurance % Annual", value=0.470, step=0.001, format="%.3f", help="The annual homeowner's insurance premium as a percentage of the home's value.")
+    initial_hoa_monthly = st.number_input("HOA monthly $", value=0, help="Monthly Homeowners Association (HOA) dues, if applicable.")
+    initial_ground_lease_monthly = st.number_input("Ground lease monthly $", value=50, help="Monthly fee paid to the land trust for the ground lease.")
+    initial_pmi_financing_fees_monthly = st.number_input("PMI or Additional monthly fees $", value=100.0, help="Monthly Private Mortgage Insurance (PMI) or other recurring financing fees.")
+    property_tax_based_on_affordable_price = st.checkbox("**Tax Basis**: Tax calculated on Affordable Price?", value=True, help="If checked, property taxes are assessed on the restricted affordable value rather than the market value.")
+    insurance_based_on_affordable_price = st.checkbox("**Insurance Basis**: Insurance calculated on Affordable Price?", value=False, help="If checked, insurance premiums are based on the affordable restricted price.")
 
 with st.sidebar.expander("**🫴🪙Outside Subsidy**", expanded=True):
-    initial_downpayment_assistance_amount = st.number_input("Downpayment Assistance (DPA) $ Amount", value=0, step=10)
-    initial_downpayment_assistance_covers_buyer_contribution_check = st.checkbox("**DPA**: Covers Buyer's Contribution", value=True)
-    initial_affordability_gap_amount = st.number_input("Affordability Gap $ Amount", value=0, step=10, help="Amount already fundraised to cover the affordability subsidy.")
+    initial_downpayment_assistance_amount = st.number_input("Downpayment Assistance (DPA) $ Amount", value=0, step=10, help="Total grant or assistance funds provided to help with the buyer's downpayment.")
+    initial_downpayment_assistance_covers_buyer_contribution_check = st.checkbox("**DPA**: Covers Buyer's Contribution", value=True, help="If checked, the assistance funds go towards fulfilling the buyer's minimum required downpayment.")
+    initial_affordability_gap_amount = st.number_input("Affordability Gap $ Amount", value=0, step=10, help="Amount of outside subsidy or gap funding already secured for the project.")
 
 with st.sidebar.expander("**⚙️Simulation**", expanded=True):
-    initial_holding_period_years = st.slider("Holding Period (years)", min_value=1, max_value=40, value=15)
-    vale_resale_capped = st.checkbox("**CAP**: Prevent Resale Formula Proceeds from Exceeding Market Rate Proceeds", value=True)
-    subtract_sunk_costs = st.checkbox("**NET POSITION**: Subtract sunk living costs (Taxes, Insurance, Interest, HOA) from Wealth Built", value=False)
-    
-    st.markdown("---")
-    cost_model = st.radio(
-        "Housing Cost Model",
-        options=["Realistic (Market-Tied & Static Fees)", "Idealized (Flat Affordability)"],
-        index=0,
-        help="Realistic ties insurance to market value and calculates actual FHA/Conventional PMI drop-offs. Idealized perfectly scales all costs with AMI."
-    )
-    
-    st.markdown("---")
-    adjust_for_inflation = st.checkbox(
-        "Adjust Values for Inflation (Present Value)", 
-        value=False,
-        help="Display future financial returns in today's purchasing power."
-    )
-    general_inflation_rate = st.number_input(
-        "General Economic Inflation Rate (%)", 
-        min_value=0.0, 
-        max_value=15.0, 
-        value=2.5, 
-        step=0.1
-    )
-# END SECTION 1 #############################################################################################
+    initial_holding_period_years = st.slider("Holding Period (years)", min_value=1, max_value=40, value=15, help="The number of years the initial buyer holds the property before selling.")
+    vale_resale_capped = st.checkbox("**CAP**: Prevent Resale Formula Proceeds from Exceeding Market", value=True, help="Prevents the calculated resale price from exceeding the unrestricted open-market value.")
+    subtract_sunk_costs = st.checkbox("**NET POSITION**: Subtract sunk living costs from Wealth Built", value=False, help="Subtracts non-recoverable costs (taxes, insurance, interest, etc.) from the seller's final wealth calculation.")
+    cost_model = st.radio("Housing Cost Model", options=["Realistic (Market-Tied & Static Fees)", "Idealized (Flat Affordability)"], index=0, help="Realistic ties insurance to market value and calculates actual FHA/Conventional PMI drop-offs. Idealized perfectly scales all costs with AMI.")
+    adjust_for_inflation = st.checkbox("Adjust Values for Inflation (Present Value)", value=False, help="Display future financial returns in today's purchasing power.")
+    general_inflation_rate = st.number_input("General Economic Inflation Rate (%)", value=2.5, step=0.1, help="The assumed annual rate of general economic inflation used to calculate present value.")
+# END Section 1 #############################################################################################
 
 
 
 #############################################################################################################
-# Section 2: Utilize finance.py package to compute financials and statistics
+# Section 1.5: Scenario Matrix Manager (Dynamic Widget Grid)
 #############################################################################################################
-proj = compute_projections(
-    initial_market_value=initial_market_value,
-    initial_affordability_pct_of_ami=initial_affordability_pct_of_ami,
-    initial_market_home_price_inflation_rate=initial_market_home_price_inflation_rate,
-    initial_area_median_income_inflation=initial_area_median_income_inflation,
-    initial_perc_income_spent_on_housing=initial_perc_income_spent_on_housing,
-    initial_ami_four_person_dollar_amount=initial_ami_four_person_dollar_amount,
-    initial_vale_resale_fixed_index_pct=initial_vale_resale_fixed_index_pct,
-    initial_household_size=initial_household_size,
-    initial_mortgage_rate=initial_mortgage_rate,
-    resale_mortgage_rate=resale_mortgage_rate,
-    initial_downpayment_pct=initial_downpayment_pct,
-    initial_closing_cost_pct=initial_closing_cost_pct,
-    resale_selling_cost_pct=resale_selling_cost_pct,
-    initial_length_of_mortgage_years=initial_length_of_mortgage_years,
-    using_FHA_loan=using_FHA_loan,
-    initial_property_tax_pct_annual=initial_property_tax_pct_annual,
-    initial_insurance_pct_annual=initial_insurance_pct_annual,
-    initial_hoa_monthly=initial_hoa_monthly,
-    initial_ground_lease_monthly=initial_ground_lease_monthly,
-    initial_pmi_financing_fees_monthly=initial_pmi_financing_fees_monthly,
-    property_tax_based_on_affordable_price=property_tax_based_on_affordable_price,
-    insurance_based_on_affordable_price=insurance_based_on_affordable_price,
-    initial_downpayment_assistance_amount=initial_downpayment_assistance_amount,
-    initial_downpayment_assistance_covers_buyer_contribution_check=initial_downpayment_assistance_covers_buyer_contribution_check,
-    initial_affordability_gap_amount=initial_affordability_gap_amount,
-    initial_holding_period_years=initial_holding_period_years,
-    vale_resale_capped=vale_resale_capped,
-    subtract_sunk_costs=subtract_sunk_costs,
-    cost_model=cost_model,
-    adjust_for_inflation=adjust_for_inflation,
-    general_inflation_rate=(general_inflation_rate / 100.0)
-)
+st.subheader("Scenario Matrix")
+st.write("Add variable rows to the matrix to override the global sidebar defaults for specific scenarios.")
+
+# 1. Define all available sidebar variables and their exact properties
+ALL_VARIABLES = {
+    "initial_market_value": {"label": "Property Asking Price $", "type": "number", "default": 348000, "step": 1000},
+    "initial_affordability_pct_of_ami": {"label": "Prospective Buyer Income Target (% of AMI)", "type": "number", "default": 80.0, "step": 10.0},
+    "initial_market_home_price_inflation_rate": {"label": "Home price inflation %", "type": "number", "default": 7.1, "step": 0.1},
+    "initial_area_median_income_inflation": {"label": "Area Median Income (AMI) inflation %", "type": "number", "default": 4.0, "step": 0.1},
+    "initial_perc_income_spent_on_housing": {"label": "Percentage of Income Spent on Housing %", "type": "number", "default": 30, "step": 1},
+    "initial_ami_four_person_dollar_amount": {"label": "100% AMI for 4-person household", "type": "number", "default": 93100, "step": 100},
+    "initial_vale_resale_fixed_index_pct": {"label": "Fixed Index % Increase (tier)", "type": "number", "default": 3.0, "step": 0.1},
+    "initial_household_size": {"label": "Target household size", "type": "select", "options": [1, 2, 3, 4, 5, 6, 7, 8], "default": 4},
+    "initial_mortgage_rate": {"label": "Mortgage rate (Initial Buyer)", "type": "number", "default": 6.0, "step": 0.1},
+    "resale_mortgage_rate": {"label": "Mortgage rate (Resale Buyer)", "type": "number", "default": 6.0, "step": 0.1},
+    "initial_downpayment_pct": {"label": "Downpayment %", "type": "number", "default": 5.0, "step": 0.1},
+    "initial_closing_cost_pct": {"label": "Closing Costs %", "type": "number", "default": 3.0, "step": 0.1},
+    "resale_selling_cost_pct": {"label": "Selling cost %", "type": "number", "default": 7.0, "step": 0.1},
+    "initial_length_of_mortgage_years": {"label": "Length of Mortage (Years)", "type": "select", "options": [10, 15, 20, 30, 40], "default": 30},
+    "using_FHA_loan": {"label": "FHA Loan: Buyer is using FHA Loan", "type": "checkbox", "default": False},
+    "initial_property_tax_pct_annual": {"label": "Property tax % Annual", "type": "number", "default": 1.570, "step": 0.001, "format": "%.3f"},
+    "initial_insurance_pct_annual": {"label": "Insurance % Annual", "type": "number", "default": 0.470, "step": 0.001, "format": "%.3f"},
+    "initial_hoa_monthly": {"label": "HOA monthly $", "type": "number", "default": 0, "step": 10},
+    "initial_ground_lease_monthly": {"label": "Ground lease monthly $", "type": "number", "default": 50, "step": 10},
+    "initial_pmi_financing_fees_monthly": {"label": "PMI or Additional monthly fees $", "type": "number", "default": 100.0, "step": 10.0},
+    "property_tax_based_on_affordable_price": {"label": "Tax Basis: Tax calculated on Affordable Price?", "type": "checkbox", "default": True},
+    "insurance_based_on_affordable_price": {"label": "Insurance Basis: Insurance calculated on Affordable Price?", "type": "checkbox", "default": False},
+    "initial_downpayment_assistance_amount": {"label": "Downpayment Assistance (DPA) $ Amount", "type": "number", "default": 0, "step": 10},
+    "initial_downpayment_assistance_covers_buyer_contribution_check": {"label": "DPA: Covers Buyer's Contribution", "type": "checkbox", "default": True},
+    "initial_affordability_gap_amount": {"label": "Affordability Gap $ Amount", "type": "number", "default": 0, "step": 10},
+    "initial_holding_period_years": {"label": "Holding Period (years)", "type": "number", "default": 15, "min": 1, "max": 40, "step": 1},
+    "vale_resale_capped": {"label": "CAP: Prevent Resale Formula Proceeds from Exceeding Market", "type": "checkbox", "default": True},
+    "subtract_sunk_costs": {"label": "NET POSITION: Subtract sunk living costs from Wealth Built", "type": "checkbox", "default": False},
+    "cost_model": {"label": "Housing Cost Model", "type": "select", "options": ["Realistic (Market-Tied & Static Fees)", "Idealized (Flat Affordability)"], "default": "Realistic (Market-Tied & Static Fees)"},
+    "adjust_for_inflation": {"label": "Adjust Values for Inflation (Present Value)", "type": "checkbox", "default": False},
+    "general_inflation_rate": {"label": "General Economic Inflation Rate (%)", "type": "number", "default": 2.5, "step": 0.1}
+}
+
+# 2. Initialize Matrix State
+if "scenarios" not in st.session_state:
+    st.session_state.scenarios = ['Base Economic Scenario', 
+                                  'Flat Housing Market', 
+                                  'Housing Market Price Spike', 
+                                  'Housing Price Bust', 
+                                  #'ANY AND ALL', 
+                                  'Wage Stagnation & Housing Prices Spike']
+    
+if "matrix_data" not in st.session_state:
+    st.session_state.matrix_data = {scen: {} for scen in st.session_state.scenarios}
+    defaults_mapping = {
+        'Base Economic Scenario': {"initial_holding_period_years": 40, "initial_market_home_price_inflation_rate": 7.1, "initial_area_median_income_inflation": 4.0, "general_inflation_rate": 2.5, "initial_mortgage_rate": 6.0, "resale_mortgage_rate": 6.0},
+        'Flat Housing Market': {"initial_holding_period_years": 40, "initial_market_home_price_inflation_rate": 1.0, "initial_area_median_income_inflation": 3.0, "general_inflation_rate": 2.5, "initial_mortgage_rate": 6.0, "resale_mortgage_rate": 6.0},
+        'Housing Market Price Spike': {"initial_holding_period_years": 40, "initial_market_home_price_inflation_rate": 9.0, "initial_area_median_income_inflation": 4.0, "general_inflation_rate": 2.5, "initial_mortgage_rate": 6.0, "resale_mortgage_rate": 6.0},
+        'Housing Price Bust': {"initial_holding_period_years": 40, "initial_market_home_price_inflation_rate": -4.0, "initial_area_median_income_inflation": 3.0, "general_inflation_rate": 2.5, "initial_mortgage_rate": 6.0, "resale_mortgage_rate": 6.0},
+        #'ANY AND ALL': {"initial_holding_period_years": 40, "initial_market_home_price_inflation_rate": 6.0, "initial_area_median_income_inflation": 4.0, "general_inflation_rate": 2.0, "initial_mortgage_rate": 6.0, "resale_mortgage_rate": 6.0},
+        'Wage Stagnation & Housing Prices Spike': {"initial_holding_period_years": 40, "initial_market_home_price_inflation_rate": 12.0, "initial_area_median_income_inflation": 0.5, "general_inflation_rate": 2.5, "initial_mortgage_rate": 12.0, "resale_mortgage_rate": 6.0}
+    }
+    for sc, vals in defaults_mapping.items():
+        st.session_state.matrix_data[sc] = vals
+
+if "active_variables" not in st.session_state:
+    st.session_state.active_variables = [
+        "initial_holding_period_years", "initial_market_home_price_inflation_rate", 
+        "initial_area_median_income_inflation", "general_inflation_rate", 
+        "initial_mortgage_rate", "resale_mortgage_rate"
+    ]
+
+# 3. Controls to Add/Remove Scenarios and Variables
+control_cols = st.columns([1, 1, 1.5, 0.5])
+
+with control_cols[0]:
+    with st.form("add_scen_form", clear_on_submit=True):
+        new_scen = st.text_input("New Scenario Name", placeholder="E.g., High Taxes")
+        submitted = st.form_submit_button("➕ Add Scenario")
+        if submitted:
+            if len(st.session_state.scenarios) >= 6:
+                st.warning("You've reached the maximum of 6 scenarios! Please remove one before adding another.", icon="⚠️")
+            elif new_scen and new_scen not in st.session_state.scenarios:
+                st.session_state.scenarios.append(new_scen)
+                st.session_state.matrix_data[new_scen] = st.session_state.matrix_data[st.session_state.scenarios[0]].copy()
+                st.rerun()
+
+with control_cols[1]:
+    with st.form("del_scen_form"):
+        to_remove_scen = st.selectbox("Remove Scenario", options=st.session_state.scenarios)
+        if st.form_submit_button("🗑️ Remove Scenario") and len(st.session_state.scenarios) > 1:
+            st.session_state.scenarios.remove(to_remove_scen)
+            del st.session_state.matrix_data[to_remove_scen]
+            st.rerun()
+
+with control_cols[2]:
+    with st.form("add_var_form"):
+        available_vars = {k: v["label"] for k, v in ALL_VARIABLES.items() if k not in st.session_state.active_variables}
+        new_var_key = st.selectbox(
+            "Select a variable to add:", 
+            options=list(available_vars.keys()), 
+            format_func=lambda x: available_vars[x]
+        )
+        if st.form_submit_button("➕ Add Variable Row") and new_var_key:
+            st.session_state.active_variables.append(new_var_key)
+            for sc in st.session_state.scenarios:
+                st.session_state.matrix_data[sc][new_var_key] = ALL_VARIABLES[new_var_key]["default"]
+            st.rerun()
+
+with control_cols[3]:
+    with st.form("del_var_form"):
+        to_remove_var = st.selectbox("Remove Row", options=st.session_state.active_variables, format_func=lambda x: ALL_VARIABLES[x]["label"], label_visibility="collapsed")
+        if st.form_submit_button("🗑️ Remove"):
+            st.session_state.active_variables.remove(to_remove_var)
+            st.rerun()
+
+# 4. Render the Interactive Matrix Grid
+st.markdown("---")
+
+grid_cols = st.columns([1.5] + [1] * len(st.session_state.scenarios))
+grid_cols[0].markdown("**Variable**")
+for i, sc in enumerate(st.session_state.scenarios):
+    grid_cols[i+1].markdown(f"**{sc}**")
+
+for var in st.session_state.active_variables:
+    var_info = ALL_VARIABLES[var]
+    grid_cols = st.columns([1.5] + [1] * len(st.session_state.scenarios))
+    grid_cols[0].markdown(f"<div style='padding-top:10px; font-size:0.9em; color:#4a4a4a'>{var_info['label']}</div>", unsafe_allow_html=True)
+    
+    for i, sc in enumerate(st.session_state.scenarios):
+        with grid_cols[i+1]:
+            widget_key = f"{sc}_{var}"
+            current_val = st.session_state.matrix_data[sc].get(var, var_info["default"])
+            
+            if var_info["type"] == "checkbox":
+                new_val = st.checkbox("Enable", value=bool(current_val), key=widget_key, label_visibility="collapsed")
+            elif var_info["type"] == "select":
+                idx = var_info["options"].index(current_val) if current_val in var_info["options"] else 0
+                new_val = st.selectbox("Select", options=var_info["options"], index=idx, key=widget_key, label_visibility="collapsed")
+            elif var_info["type"] == "number":
+                step = var_info.get("step", 1.0)
+                fmt = var_info.get("format", None)
+                min_val = var_info.get("min", None)
+                max_val = var_info.get("max", None)
+                new_val = st.number_input("Number", value=float(current_val) if isinstance(current_val, float) else int(current_val), min_value=min_val, max_value=max_val, step=step, format=fmt, key=widget_key, label_visibility="collapsed")
+            
+            st.session_state.matrix_data[sc][var] = new_val
+
+st.markdown("---")
+# END Section 1.5 ###########################################################################################
+
+
+
+#############################################################################################################
+# Section 2: Run Scenarios & Capture Plot Traces
+#############################################################################################################
+base_kwargs = {
+    "initial_market_value": initial_market_value,
+    "initial_affordability_pct_of_ami": initial_affordability_pct_of_ami,
+    "initial_market_home_price_inflation_rate": initial_market_home_price_inflation_rate,
+    "initial_area_median_income_inflation": initial_area_median_income_inflation,
+    "initial_perc_income_spent_on_housing": initial_perc_income_spent_on_housing,
+    "initial_ami_four_person_dollar_amount": initial_ami_four_person_dollar_amount,
+    "initial_vale_resale_fixed_index_pct": initial_vale_resale_fixed_index_pct,
+    "initial_household_size": initial_household_size,
+    "initial_mortgage_rate": initial_mortgage_rate,
+    "resale_mortgage_rate": resale_mortgage_rate,
+    "initial_downpayment_pct": initial_downpayment_pct,
+    "initial_closing_cost_pct": initial_closing_cost_pct,
+    "resale_selling_cost_pct": resale_selling_cost_pct,
+    "initial_length_of_mortgage_years": initial_length_of_mortgage_years,
+    "using_FHA_loan": using_FHA_loan,
+    "initial_property_tax_pct_annual": initial_property_tax_pct_annual,
+    "initial_insurance_pct_annual": initial_insurance_pct_annual,
+    "initial_hoa_monthly": initial_hoa_monthly,
+    "initial_ground_lease_monthly": initial_ground_lease_monthly,
+    "initial_pmi_financing_fees_monthly": initial_pmi_financing_fees_monthly,
+    "property_tax_based_on_affordable_price": property_tax_based_on_affordable_price,
+    "insurance_based_on_affordable_price": insurance_based_on_affordable_price,
+    "initial_downpayment_assistance_amount": initial_downpayment_assistance_amount,
+    "initial_downpayment_assistance_covers_buyer_contribution_check": initial_downpayment_assistance_covers_buyer_contribution_check,
+    "initial_affordability_gap_amount": initial_affordability_gap_amount,
+    "initial_holding_period_years": initial_holding_period_years,
+    "vale_resale_capped": vale_resale_capped,
+    "subtract_sunk_costs": subtract_sunk_costs,
+    "cost_model": cost_model,
+    "adjust_for_inflation": adjust_for_inflation,
+    "general_inflation_rate": (general_inflation_rate / 100.0)
+}
+
+scenario_results = {}
+SCENARIO_COLORS = ['#636EFA', '#EF553B', '#00CC96', '#AB63FA', '#FFA15A', '#19D3F3']
+scenarios_to_run = st.session_state.scenarios[:6]
+
+for col_name in scenarios_to_run:
+    kwargs = base_kwargs.copy()
+    scenario_overrides = st.session_state.matrix_data.get(col_name, {})
+    for var_key, val in scenario_overrides.items():
+        if var_key in st.session_state.active_variables:
+            kwargs[var_key] = val
+
+    try:
+        scenario_results[col_name] = compute_projections(**kwargs)
+    except Exception as e:
+        st.error(f"Error computing Scenario: {col_name}. Missing or invalid matrix parameter: {e}")
 # END Section 2 #############################################################################################
 
 
 
 #############################################################################################################
-# Section 3a: Convert fundamentals of Affordability Metrics
+# Section 3: Show fundamentals of Affordability Metrics Widget
 #############################################################################################################
-#st.subheader("Affordabilty Metrics")
-st.markdown("<h3 style='text-align: center;'>Affordabilty Metrics</h3>", unsafe_allow_html=True)
+st.markdown("<h3 style='text-align: center; margin-top: 2rem;'>Affordability Metrics Viewer</h3>", unsafe_allow_html=True)
+selected_scenario_metrics = st.selectbox("Select Scenario for Year 0 Affordability Breakdown", options=list(scenario_results.keys()))
 
-# Instantiate Income Availability
-initial_annual_income = float(proj["InitialAnnualTargetIncome"].iloc[0])
-initial_monthly_income = float(proj["InitialMonthlyTargetIncome"].iloc[0])
-initial_annual_income_avail_for_housing = float(proj["InitialAnnualTargetIncomeAvailForHousing"].iloc[0])
-initial_monthly_income_avail_for_housing = float(proj["InitialMonthlyTargetIncomeAvailForHousing"].iloc[0])
-
-# Instantiate Static Costs
-initial_hoa_annually = float(proj["InitialHOAAnnually"].iloc[0])
-initial_ground_lease_annually = float(proj["InitialGroundLeaseAnnually"].iloc[0])
-initial_pmi_financing_fees_annually = float(proj["InitialPMIandFinancingFeesAnnually"].iloc[0])
-initial_pmi_financing_fees_monthly = float(proj["InitialPMIandFinancingFeesMonthly"].iloc[0])
-initial_static_costs_monthly = float(proj["InitialStaticCostsMonthly"].iloc[0])
-initial_mortgage_rate_annually_decimal = float(proj["InitialMortgageRateAnnually"].iloc[0])
-initial_mortgage_affordable_closing_costs = float(proj["InitialClosingCostsAffordable"].iloc[0])
-
-# Instantiate Solved Property Financials
-initial_max_loan_amount_affordable = float(proj["InitialMaxLoanAmountAffordable"].iloc[0])
-initial_total_downpayment_amount_affordable = float(proj["InitialTotalDownpaymentAmountAffordable"].iloc[0])
-initial_buyer_cash_contribution_downpayment = float(proj["InitialBuyerCashContributionDownpayment"].iloc[0])
-initial_downpayment_assistance_amount = float(proj["InitialDownpaymentAssistanceAmount"].iloc[0])
-initial_affordable_purchase_price_paid_by_resident_owner = float(proj["InitialPurchasePriceAffordable"].iloc[0])
-initial_property_taxes_amount_annual = float(proj["InitialPropertyTaxAmountAnnual"].iloc[0])
-initial_property_taxes_amount_monthly = float(proj["InitialPropertyTaxAmountMonthly"].iloc[0])
-initial_insurance_amount_annual = float(proj["InitialInsuranceAmountAnnual"].iloc[0])
-initial_insurance_amount_monthly = float(proj["InitialInsuranceAmountMonthly"].iloc[0])
-initial_avail_mortgage_payment_monthly_affordable = float(proj["InitialAvailMortgagePaymentMonthlyAffordable"].iloc[0])
-initial_subsidy_required = float(proj["InitialSubsidyRequired"].iloc[0])
-initial_affordability_gap_amount = float(proj["InitialAffordabilityGapAmount"].iloc[0])
-initial_remaining_subsidy_required = float(proj["InitialRemainingSubsidyRequired"].iloc[0])
-initial_total_other_housing_annual = float(proj["InitialTotalOtherHousingAnnual"].iloc[0])
-initial_total_other_housing_monthly = float(proj["InitialTotalOtherHousingMonthly"].iloc[0])
-
-# END Section 3a #############################################################################################
-
-
-
-#############################################################################################################
-# Section 3c: Show fundamentals of Affordability Metrics
-#############################################################################################################
-
-def render_affordability_subsidy_widget(data: dict):
-    """
-    Renders an HTML/CSS spreadsheet-style widget matching the visual design
-    and layout, now complete with interactive info hovers.
-    """
+if selected_scenario_metrics and selected_scenario_metrics in scenario_results:
+    m_proj = scenario_results[selected_scenario_metrics]
     
-    # Currency and Percentage Formatting Helpers
-    def f_curr(val):
-        if val is None:
-            return "—"
-        return f"$ {val:,.0f}"
-        
-    def f_pct(val):
-        if val is None:
-            return "—"
-        return f"{val * 100:.2f}%"
+    sample_financials = {
+        "initial_target_income_annual": float(m_proj["InitialAnnualTargetIncome"].iloc[0]),
+        "initial_target_income_monthly": float(m_proj["InitialMonthlyTargetIncome"].iloc[0]),
+        "initial_avail_housing_annual": float(m_proj["InitialAnnualTargetIncomeAvailForHousing"].iloc[0]),
+        "initial_avail_housing_monthly": float(m_proj["InitialMonthlyTargetIncomeAvailForHousing"].iloc[0]),
+        "initial_prop_taxes_annual": float(m_proj["InitialPropertyTaxAmountAnnual"].iloc[0]),
+        "initial_prop_taxes_monthly": float(m_proj["InitialPropertyTaxAmountMonthly"].iloc[0]),
+        "initial_insurance_annual": float(m_proj["InitialInsuranceAmountAnnual"].iloc[0]),
+        "initial_insurance_monthly": float(m_proj["InitialInsuranceAmountMonthly"].iloc[0]),
+        "initial_hoa_annually": float(m_proj["InitialHOAAnnually"].iloc[0]),
+        "initial_hoa_monthly": float(m_proj["InitialStaticCostsMonthly"].iloc[0] - m_proj["InitialPMIandFinancingFeesMonthly"].iloc[0] - m_proj["InitialGroundLeaseAnnually"].iloc[0]/12), 
+        "initial_ground_lease_annually": float(m_proj["InitialGroundLeaseAnnually"].iloc[0]),
+        "initial_ground_lease_monthly": float(m_proj["InitialGroundLeaseAnnually"].iloc[0] / 12),
+        "initial_pmi_financing_fees_annually": float(m_proj["InitialPMIandFinancingFeesAnnually"].iloc[0]),
+        "initial_pmi_financing_fees_monthly": float(m_proj["InitialPMIandFinancingFeesMonthly"].iloc[0]),
+        "initial_total_other_housing_annual": float(m_proj["InitialTotalOtherHousingAnnual"].iloc[0]),
+        "initial_total_other_housing_monthly": float(m_proj["InitialTotalOtherHousingMonthly"].iloc[0]),
+        "initial_avail_mortgage_monthly_affordable": float(m_proj["InitialAvailMortgagePaymentMonthlyAffordable"].iloc[0]),
+        "initial_mortgage_rate_annually_decimal": float(m_proj["InitialMortgageRateAnnually"].iloc[0]),
+        "initial_max_loan_amount_affordable": float(m_proj["InitialMaxLoanAmountAffordable"].iloc[0]),
+        "initial_total_downpayment_affordable": float(m_proj["InitialTotalDownpaymentAmountAffordable"].iloc[0]),
+        "initial_buyer_cash_contribution_downpayment": float(m_proj["InitialBuyerCashContributionDownpayment"].iloc[0]),
+        "initial_downpayment_assistance_amount": float(m_proj["InitialDownpaymentAssistanceAmount"].iloc[0]),
+        "initial_mortgage_affordable_closing_costs": float(m_proj["InitialClosingCostsAffordable"].iloc[0]),
+        "outside_gap_loan": 0.0,
+        "initial_affordable_purchase_price": float(m_proj["InitialPurchasePriceAffordable"].iloc[0]),
+        "initial_subsidy_required": float(m_proj["InitialSubsidyRequired"].iloc[0]),
+        "initial_affordability_gap_amount": float(m_proj["InitialAffordabilityGapAmount"].iloc[0]),
+        "initial_remaining_subsidy_required": float(m_proj["InitialRemainingSubsidyRequired"].iloc[0]),
+    }
 
-    # Custom CSS to mimic the spreadsheet
+    def f_curr(val): return "—" if val is None else f"$ {val:,.0f}"
+    def f_pct(val): return "—" if val is None else f"{val * 100:.2f}%"
+
     style_block = """
     <style>
-        .sheet-container {
-            background-color: #FFF0E6; /* Warm peach tint background */
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            border-radius: 4px;
-            color: #1A1A1A;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-            max-width: 700px;
-            margin: 10px auto;
-            position: relative;
-        }
-        .sheet-header {
-            background-color: #EA6A20; /* Vibrant orange header */
-            color: #FFFFFF;
-            padding: 8px 12px;
-            font-size: 1.25rem;
-            font-weight: 700;
-            letter-spacing: -0.02em;
-        }
-        .sheet-subheader {
-            background-color: #FFD6C2; /* Soft orange/cream subheader */
-            color: #D35400;
-            font-style: italic;
-            padding: 4px 12px;
-            font-size: 0.95rem;
-            border-bottom: 2px solid #E67E22;
-        }
-        .sheet-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 0.95rem;
-        }
-        .sheet-table td {
-            padding: 6px 12px;
-            vertical-align: middle;
-        }
-        .sheet-col-header {
-            font-weight: 500;
-            color: #4A4A4A;
-            text-align: right;
-            padding-bottom: 2px;
-        }
-        .sheet-section-title {
-            font-weight: 800;
-            font-size: 1.05rem;
-            color: #1A1A1A;
-            padding-top: 14px;
-            padding-bottom: 4px;
-        }
-        .sheet-row-bold {
-            font-weight: 700;
-        }
-        .sheet-row-divider {
-            border-top: 1px solid #1A1A1A;
-        }
-        .sheet-row-double-divider {
-            border-top: 1px solid #1A1A1A;
-            border-bottom: 3px double #1A1A1A;
-        }
-        .sheet-highlight-box {
-            background-color: #FFD6C2;
-            font-weight: 800;
-            border-top: 2px solid #1A1A1A;
-            border-bottom: 2px solid #1A1A1A;
-            font-size: 1.05rem;
-        }
+        .sheet-container { background-color: #FFF0E6; font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; border-radius: 4px; color: #1A1A1A; max-width: 700px; margin: 10px auto; position: relative; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); }
+        .sheet-header { background-color: #EA6A20; color: #FFFFFF; padding: 8px 12px; font-size: 1.25rem; font-weight: 700; letter-spacing: -0.02em; }
+        .sheet-subheader { background-color: #FFD6C2; color: #D35400; font-style: italic; padding: 4px 12px; border-bottom: 2px solid #E67E22; font-size: 0.95rem; }
+        .sheet-table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+        .sheet-table td { padding: 6px 12px; vertical-align: middle; }
+        .sheet-col-header { font-weight: 500; color: #4A4A4A; text-align: right; padding-bottom: 2px; }
+        .sheet-section-title { font-weight: 800; font-size: 1.05rem; padding-top: 14px; padding-bottom: 4px; }
+        .sheet-row-bold { font-weight: 700; }
+        .sheet-row-divider { border-top: 1px solid #1A1A1A; }
+        .sheet-highlight-box { background-color: #FFD6C2; font-weight: 800; border-top: 2px solid #1A1A1A; border-bottom: 2px solid #1A1A1A; font-size: 1.05rem; }
         
         /* Interactive CSS Tooltip Module */
-        .tooltip-container {
-            position: relative;
-            display: inline-block;
-            cursor: help;
-            margin-left: 6px;
-            color: #EA6A20; /* Vibrant orange matching theme */
-            font-size: 0.9rem;
-            font-weight: bold;
-            vertical-align: middle;
-            transition: color 0.2s;
-        }
-        .tooltip-container:hover {
-            color: #D35400;
-        }
+        .tooltip-container { position: relative; display: inline-block; cursor: help; margin-left: 6px; color: #EA6A20; font-size: 0.9rem; font-weight: bold; vertical-align: middle; transition: color 0.2s; }
+        .tooltip-container:hover { color: #D35400; }
         .tooltip-container .tooltip-text {
-            visibility: hidden;
-            width: 250px;
-            background-color: #2D3748; /* Sleek slate-dark gray */
-            color: #FFFFFF;
-            text-align: left;
-            border-radius: 6px;
-            padding: 10px 12px;
-            position: absolute;
-            z-index: 999; /* Float over table components */
-            bottom: 125%;
-            left: 50%;
-            margin-left: -125px;
-            opacity: 0;
-            transition: opacity 0.2s, transform 0.2s;
-            transform: translateY(8px);
-            font-size: 0.8rem;
-            font-weight: 400;
-            line-height: 1.4;
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.15);
-            pointer-events: none; /* Bypass pointer loops during hot spots */
+            visibility: hidden; width: 250px; background-color: #2D3748; color: #FFFFFF; text-align: left;
+            border-radius: 6px; padding: 10px 12px; position: absolute; z-index: 999;
+            bottom: 125%; left: 50%; margin-left: -125px; opacity: 0;
+            transition: opacity 0.2s, transform 0.2s; transform: translateY(8px);
+            font-size: 0.8rem; font-weight: 400; line-height: 1.4;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.15); pointer-events: none;
         }
         .tooltip-container .tooltip-text::after {
-            content: "";
-            position: absolute;
-            top: 100%;
-            left: 50%;
-            margin-left: -6px;
-            border-width: 6px;
-            border-style: solid;
-            border-color: #2D3748 transparent transparent transparent;
+            content: ""; position: absolute; top: 100%; left: 50%; margin-left: -6px;
+            border-width: 6px; border-style: solid; border-color: #2D3748 transparent transparent transparent;
         }
-        .tooltip-container:hover .tooltip-text {
-            visibility: visible;
-            opacity: 1;
-            transform: translateY(0);
-        }
+        .tooltip-container:hover .tooltip-text { visibility: visible; opacity: 1; transform: translateY(0); }
     </style>
     """
 
-    # Inline HTML structure mapping exactly with descriptive tooltips
     html_content = f"""
     {style_block}
     <div class="sheet-container">
-        <div class="sheet-header">A. Affordability Subsidy</div>
+        <div class="sheet-header">A. Affordability Subsidy ({selected_scenario_metrics})</div>
         <div class="sheet-subheader">Subsidy to bring the market value down to an affordable level</div>
         <table class="sheet-table">
-            <!-- Headers -->
+            <tr><td></td><td class="sheet-col-header" style="width: 25%;">Annual</td><td class="sheet-col-header" style="width: 25%;">Monthly</td></tr>
             <tr>
-                <td></td>
-                <td class="sheet-col-header" style="width: 25%;">Annual</td>
-                <td class="sheet-col-header" style="width: 25%;">Monthly</td>
+                <td>Target Income <span class="tooltip-container">&#9432;<span class="tooltip-text">The target household income limit for this unit, typically derived from a percentage of the Area Median Income (AMI).</span></span></td>
+                <td style="text-align: right;">{f_curr(sample_financials['initial_target_income_annual'])}</td><td style="text-align: right;">{f_curr(sample_financials['initial_target_income_monthly'])}</td>
             </tr>
-            <!-- Target Income -->
             <tr>
-                <td>
-                    Target Income
-                    <span class="tooltip-container">&#9432;<span class="tooltip-text">The target household income limit for this unit, typically derived from a percentage of the Area Median Income (AMI).</span></span>
-                </td>
-                <td style="text-align: right;">{f_curr(data['initial_target_income_annual'])}</td>
-                <td style="text-align: right;">{f_curr(data['initial_target_income_monthly'])}</td>
+                <td>Available for housing costs <span class="tooltip-container">&#9432;<span class="tooltip-text">The total budget allocated for all housing expenses under the standard 30% household affordability limit.</span></span></td>
+                <td style="text-align: right;">{f_curr(sample_financials['initial_avail_housing_annual'])}</td><td style="text-align: right;">{f_curr(sample_financials['initial_avail_housing_monthly'])}</td>
             </tr>
-            <!-- Available for Housing Costs -->
+            <tr><td colspan="3" class="sheet-section-title">Housing costs - other than mortgage</td></tr>
             <tr>
-                <td>
-                    Available for housing costs
-                    <span class="tooltip-container">&#9432;<span class="tooltip-text">The total budget allocated for all housing expenses under the standard 30% household affordability limit.</span></span>
-                </td>
-                <td style="text-align: right;">{f_curr(data['initial_avail_housing_annual'])}</td>
-                <td style="text-align: right;">{f_curr(data['initial_avail_housing_monthly'])}</td>
+                <td style="padding-left: 24px;">Property Taxes <span class="tooltip-container">&#9432;<span class="tooltip-text">Annual or monthly property tax estimated based on the home's affordable purchase price or valuation.</span></span></td>
+                <td style="text-align: right;">{f_curr(sample_financials['initial_prop_taxes_annual'])}</td><td style="text-align: right;">{f_curr(sample_financials['initial_prop_taxes_monthly'])}</td>
             </tr>
-            <!-- Housing Costs Header -->
             <tr>
-                <td colspan="3" class="sheet-section-title">Housing costs - other than mortgage</td>
+                <td style="padding-left: 24px;">Insurance <span class="tooltip-container">&#9432;<span class="tooltip-text">Estimated homeowner's hazard and liability insurance premiums.</span></span></td>
+                <td style="text-align: right;">{f_curr(sample_financials['initial_insurance_annual'])}</td><td style="text-align: right;">{f_curr(sample_financials['initial_insurance_monthly'])}</td>
             </tr>
-            <!-- Property Taxes -->
             <tr>
-                <td style="padding-left: 24px;">
-                    Property Taxes
-                    <span class="tooltip-container">&#9432;<span class="tooltip-text">Annual or monthly property tax estimated based on the home's affordable purchase price or valuation.</span></span>
-                </td>
-                <td style="text-align: right;">{f_curr(data['initial_prop_taxes_annual'])}</td>
-                <td style="text-align: right;">{f_curr(data['initial_prop_taxes_monthly'])}</td>
+                <td style="padding-left: 24px;">Ground Lease or Admin Fee <span class="tooltip-container">&#9432;<span class="tooltip-text">Monthly fee paid to the Community Land Trust (CLT) to support the ground lease and program administration.</span></span></td>
+                <td style="text-align: right;">{f_curr(sample_financials['initial_ground_lease_annually'])}</td><td style="text-align: right;">{f_curr(sample_financials['initial_ground_lease_monthly'])}</td>
             </tr>
-            <!-- Insurance -->
             <tr>
-                <td style="padding-left: 24px;">
-                    Insurance
-                    <span class="tooltip-container">&#9432;<span class="tooltip-text">Estimated homeowner's hazard and liability insurance premiums.</span></span>
-                </td>
-                <td style="text-align: right;">{f_curr(data['initial_insurance_annual'])}</td>
-                <td style="text-align: right;">{f_curr(data['initial_insurance_monthly'])}</td>
+                <td style="padding-left: 24px;">PMI, Additional Financing Fees <span class="tooltip-container">&#9432;<span class="tooltip-text">Private Mortgage Insurance or other ongoing transaction-specific financing fees.</span></span></td>
+                <td style="text-align: right;">{f_curr(sample_financials['initial_pmi_financing_fees_annually'])}</td><td style="text-align: right;">{f_curr(sample_financials['initial_pmi_financing_fees_monthly'])}</td>
             </tr>
-            <!-- HOA -->
-            <tr>
-                <td style="padding-left: 24px;">
-                    Home Owners Association Dues
-                    <span class="tooltip-container">&#9432;<span class="tooltip-text">Monthly dues required by the HOA for shared community property maintenance, if applicable.</span></span>
-                </td>
-                <td style="text-align: right;">{f_curr(data['initial_hoa_annually'])}</td>
-                <td style="text-align: right;">{f_curr(data['initial_hoa_monthly'])}</td>
-            </tr>
-            <!-- Ground Lease -->
-            <tr>
-                <td style="padding-left: 24px;">
-                    Ground Lease or Admin Fee
-                    <span class="tooltip-container">&#9432;<span class="tooltip-text">Monthly fee paid to the Community Land Trust (CLT) to support the ground lease and program administration.</span></span>
-                </td>
-                <td style="text-align: right;">{f_curr(data['initial_ground_lease_annually'])}</td>
-                <td style="text-align: right;">{f_curr(data['initial_ground_lease_monthly'])}</td>
-            </tr>
-            <!-- PMI/Other -->
-            <tr>
-                <td style="padding-left: 24px;">
-                    PMI, Additional Financing Fees
-                    <span class="tooltip-container">&#9432;<span class="tooltip-text">Private Mortgage Insurance or other ongoing transaction-specific financing fees.</span></span>
-                </td>
-                <td style="text-align: right;">{f_curr(data['initial_pmi_financing_fees_annually'])}</td>
-                <td style="text-align: right;">{f_curr(data['initial_pmi_financing_fees_monthly'])}</td>
-            </tr>
-            <!-- Total Other Housing Costs -->
             <tr class="sheet-row-bold sheet-row-divider">
-                <td>
-                    Total other housing costs
-                    <span class="tooltip-container">&#9432;<span class="tooltip-text">The combined sum of non-mortgage housing expenses (taxes, insurance, lease, HOA, and PMI).</span></span>
-                </td>
-                <td style="text-align: right;">{f_curr(data['initial_total_other_housing_annual'])}</td>
-                <td style="text-align: right;">{f_curr(data['initial_total_other_housing_monthly'])}</td>
+                <td>Total other housing costs <span class="tooltip-container">&#9432;<span class="tooltip-text">The combined sum of non-mortgage housing expenses (taxes, insurance, lease, HOA, and PMI).</span></span></td>
+                <td style="text-align: right;">{f_curr(sample_financials['initial_total_other_housing_annual'])}</td><td style="text-align: right;">{f_curr(sample_financials['initial_total_other_housing_monthly'])}</td>
             </tr>
-            <!-- Gap spacing -->
             <tr><td colspan="3" style="height: 10px;"></td></tr>
-            <!-- Available for Mortgage -->
             <tr>
-                <td>
-                    Available for mortgage payment
-                    <span class="tooltip-container">&#9432;<span class="tooltip-text">The remaining portion of the housing budget available to cover monthly mortgage principal and interest (P&I) payments.</span></span>
-                </td>
-                <td></td>
-                <td style="text-align: right;">{f_curr(data['initial_avail_mortgage_monthly_affordable'])}</td>
+                <td>Available for mortgage payment <span class="tooltip-container">&#9432;<span class="tooltip-text">The remaining portion of the housing budget available to cover monthly mortgage principal and interest (P&I) payments.</span></span></td>
+                <td></td><td style="text-align: right;">{f_curr(sample_financials['initial_avail_mortgage_monthly_affordable'])}</td>
             </tr>
-            <!-- Interest Rate -->
             <tr>
-                <td>
-                    Mortgage Interest Rate
-                    <span class="tooltip-container">&#9432;<span class="tooltip-text">The mortgage interest rate applied to calculate maximum borrowing capacity.</span></span>
-                </td>
-                <td></td>
-                <td style="text-align: right; font-weight: 500;">{f_pct(data['initial_mortgage_rate_annually_decimal'])}</td>
+                <td>Mortgage Interest Rate <span class="tooltip-container">&#9432;<span class="tooltip-text">The mortgage interest rate applied to calculate maximum borrowing capacity.</span></span></td>
+                <td></td><td style="text-align: right; font-weight: 500;">{f_pct(sample_financials['initial_mortgage_rate_annually_decimal'])}</td>
             </tr>
-            <!-- Max Loan -->
             <tr class="sheet-row-bold">
-                <td>
-                    Maximum loan amount
-                    <span class="tooltip-container">&#9432;<span class="tooltip-text">The maximum mortgage principal supported by the available monthly mortgage payment over a 30-year amortization.</span></span>
-                </td>
-                <td></td>
-                <td style="text-align: right;">{f_curr(data['initial_max_loan_amount_affordable'])}</td>
+                <td>Maximum loan amount <span class="tooltip-container">&#9432;<span class="tooltip-text">The maximum mortgage principal supported by the available monthly mortgage payment over a 30-year amortization.</span></span></td>
+                <td></td><td style="text-align: right;">{f_curr(sample_financials['initial_max_loan_amount_affordable'])}</td>
             </tr>
-            <!-- Gap spacing -->
             <tr><td colspan="3" style="height: 10px;"></td></tr>
-            <!-- Downpayment -->
             <tr>
-                <td>
-                    Buyer Downpayment Contribution
-                    <span class="tooltip-container">&#9432;<span class="tooltip-text">The buyer's upfront cash down payment (e.g., 5% of the affordable purchase price).</span></span>
-                </td>
-                <td></td>
-                <td style="text-align: right;">{f_curr(data['initial_buyer_cash_contribution_downpayment'])}</td>
+                <td>Buyer Downpayment Contribution <span class="tooltip-container">&#9432;<span class="tooltip-text">The buyer's upfront cash down payment (e.g., 5% of the affordable purchase price).</span></span></td>
+                <td></td><td style="text-align: right;">{f_curr(sample_financials['initial_buyer_cash_contribution_downpayment'])}</td>
             </tr>
-            <!-- Downpayment Assistance Grant -->
             <tr>
-                <td>
-                    Downpayment Assistance
-                    <span class="tooltip-container">&#9432;<span class="tooltip-text">Outside grant that pays downpayment - directly builds buyer's equity</span></span>
-                </td>
-                <td></td>
-                <td style="text-align: right;">{f_curr(data['initial_downpayment_assistance_amount'])}</td>
+                <td>Downpayment Assistance <span class="tooltip-container">&#9432;<span class="tooltip-text">Outside grant that pays downpayment - directly builds buyer's equity.</span></span></td>
+                <td></td><td style="text-align: right;">{f_curr(sample_financials['initial_downpayment_assistance_amount'])}</td>
             </tr>
-            <!-- Total All Downpayment -->
-                        <tr class="sheet-row-bold">
-                            <td>
-                                Total All Downpayment
-                                <span class="tooltip-container">&#9432;<span class="tooltip-text">Sum of all downpayments</span></span>
-                            </td>
-                            <td></td>
-                            <td style="text-align: right;">{f_curr(data['initial_total_downpayment_affordable'])}</td>
-                        </tr>
-            <!-- Gap spacing -->
+            <tr class="sheet-row-bold">
+                <td>Total All Downpayment <span class="tooltip-container">&#9432;<span class="tooltip-text">Sum of all downpayments.</span></span></td>
+                <td></td><td style="text-align: right;">{f_curr(sample_financials['initial_total_downpayment_affordable'])}</td>
+            </tr>
             <tr><td colspan="3" style="height: 10px;"></td></tr>
-            <!-- Closing Costs -->
-            <tr>
-                <td>
-                    Closing Costs
-                    <span class="tooltip-container">&#9432;<span class="tooltip-text">These are the total closing costs that both buyers (typically can include: loan fees, appraisals, inspections, title insurance, prorated taxes) & sellers (typically can include: agent commissions, transfer taxes, property adjustment) pay</span></span>
-                </td>
-                <td></td>
-                <td style="text-align: right;">{f_curr(data['initial_mortgage_affordable_closing_costs'])}</td>
-            </tr>
-            <!-- Outside Affordability Gap -->
-            <tr>
-                <td>
-                    Outside Affordability Gap (Loan)
-                    <span class="tooltip-container">&#9432;<span class="tooltip-text">Any supplementary financing or subordinate soft-second debt required to close.</span></span>
-                </td>
-                <td></td>
-                <td style="text-align: right;">{f_curr(data['outside_gap_loan'])}</td>
-            </tr>
-            <!-- Affordable Purchase Price -->
             <tr class="sheet-row-bold sheet-row-divider">
-                <td>
-                    Affordable Purchase Price
-                    <span class="tooltip-container">&#9432;<span class="tooltip-text">The maximum total purchase price a qualified buyer at the target income can afford to pay (Maximum Loan + Downpayment).</span></span>
-                </td>
-                <td></td>
-                <td style="text-align: right;">{f_curr(data['initial_affordable_purchase_price'])}</td>
+                <td>Affordable Purchase Price <span class="tooltip-container">&#9432;<span class="tooltip-text">The maximum total purchase price a qualified buyer at the target income can afford to pay (Maximum Loan + Downpayment).</span></span></td>
+                <td></td><td style="text-align: right;">{f_curr(sample_financials['initial_affordable_purchase_price'])}</td>
             </tr>
-            <!-- Gap spacing -->
             <tr><td colspan="3" style="height: 10px;"></td></tr>
-            <!-- Total Subsidy Required -->
             <tr>
-                <td>
-                    Total "Affordability Gap" Subsidy
-                    <span class="tooltip-container">&#9432;<span class="tooltip-text">The total capital subsidy required to bridge the gap between unrestricted market value and the calculated affordable purchase price.</span></span>
-                </td>
-                <td></td>
-                <td style="text-align: right;">{f_curr(data['initial_subsidy_required'])}</td>
+                <td>Total "Affordability Gap" Subsidy <span class="tooltip-container">&#9432;<span class="tooltip-text">The total capital subsidy required to bridge the gap between unrestricted market value and the calculated affordable purchase price.</span></span></td>
+                <td></td><td style="text-align: right;">{f_curr(sample_financials['initial_subsidy_required'])}</td>
             </tr>
-            <!-- Fundraised Subsidy -->
-            <tr>
-                <td>
-                    Fundraised Subsidy (Secured)
-                    <span class="tooltip-container">&#9432;<span class="tooltip-text">Capital already raised towards bridging the affordability gap.</span></span>
-                </td>
-                <td></td>
-                <td style="text-align: right; color: #00684a;">- {f_curr(data['initial_affordability_gap_amount'])}</td>
-            </tr>
-            <!-- Highlighted Bottom Row: Remaining Subsidy Required -->
             <tr class="sheet-highlight-box">
-                <td>
-                    Remaining Subsidy to Fundraise
-                    <span class="tooltip-container">&#9432;<span class="tooltip-text">The outstanding gap that still needs to be funded to make the project viable.</span></span>
-                </td>
-                <td></td>
-                <td style="text-align: right;">{f_curr(data['initial_remaining_subsidy_required'])}</td>
+                <td>Remaining Subsidy to Fundraise <span class="tooltip-container">&#9432;<span class="tooltip-text">The outstanding gap that still needs to be funded to make the project viable.</span></span></td>
+                <td></td><td style="text-align: right;">{f_curr(sample_financials['initial_remaining_subsidy_required'])}</td>
             </tr>
         </table>
     </div>
     """
-    
     st.markdown(html_content, unsafe_allow_html=True)
-# END def render_affordability_subsidy_widget ####################################################################################
-# END Section 3c: Show fundamentals of Affordability Metrics #####################################################################
+# END Section 3 #############################################################################################
 
-
-
-#RENDER
-if __name__ == "__main__":
-    
-    sample_financials = {
-        "initial_target_income_annual": initial_annual_income,
-        "initial_target_income_monthly": initial_monthly_income,
-        "initial_avail_housing_annual": initial_annual_income_avail_for_housing,
-        "initial_avail_housing_monthly": initial_monthly_income_avail_for_housing,
-        "initial_prop_taxes_annual": initial_property_taxes_amount_annual,
-        "initial_prop_taxes_monthly": initial_property_taxes_amount_monthly,
-        "initial_insurance_annual": initial_insurance_amount_annual,
-        "initial_insurance_monthly": initial_insurance_amount_monthly,
-        "initial_hoa_annually": initial_hoa_annually,
-        "initial_hoa_monthly": initial_hoa_monthly,
-        "initial_ground_lease_annually": initial_ground_lease_annually,
-        "initial_ground_lease_monthly": initial_ground_lease_monthly,
-        "initial_pmi_financing_fees_annually": initial_pmi_financing_fees_annually,
-        "initial_pmi_financing_fees_monthly": initial_pmi_financing_fees_monthly,
-        "initial_total_other_housing_annual": initial_total_other_housing_annual,
-        "initial_total_other_housing_monthly": initial_total_other_housing_monthly,
-        "initial_avail_mortgage_monthly_affordable": initial_avail_mortgage_payment_monthly_affordable,
-        "initial_mortgage_rate_annually_decimal": initial_mortgage_rate_annually_decimal,
-        "initial_max_loan_amount_affordable": initial_max_loan_amount_affordable,
-        "initial_total_downpayment_affordable": initial_total_downpayment_amount_affordable,
-        "initial_buyer_cash_contribution_downpayment": initial_buyer_cash_contribution_downpayment,
-        "initial_downpayment_assistance_amount": initial_downpayment_assistance_amount,
-        "initial_mortgage_affordable_closing_costs": initial_mortgage_affordable_closing_costs,
-        "outside_gap_loan": 0.0,
-        "initial_affordable_purchase_price": initial_affordable_purchase_price_paid_by_resident_owner,
-        "initial_subsidy_required": initial_subsidy_required,
-        "initial_affordability_gap_amount": initial_affordability_gap_amount,
-        "initial_remaining_subsidy_required": initial_remaining_subsidy_required,
-    }
-
-    render_affordability_subsidy_widget(sample_financials)
 
 
 #############################################################################################################
-# Section 4: Layout main charts in a 2x2 grid and table of results
+# Section 4: Unified 2x2 Plotly Grid with Persistent Legend & Layout Spacing
 #############################################################################################################
+st.markdown("<h3 style='text-align: center; margin-top: 1rem; margin-bottom: 0.5rem;'>Simulation Projections</h3>", unsafe_allow_html=True)
+
+# Generate list of all possible legend items across active scenarios
+all_possible_legend_items = []
+for scen in scenario_results.keys():
+    all_possible_legend_items.extend([f"{scen} (Market)", f"{scen} (Fixed)", f"{scen} (AMI)"])
+
+# Initialize legend state in st.session_state
+if "visible_legend_items" not in st.session_state:
+    st.session_state.visible_legend_items = all_possible_legend_items.copy()
+
+# Add Multiselect State Filter (Redundant reset button removed)
+selected_legends = st.multiselect(
+    "Active Legend Items (Preserved across scenario updates):",
+    options=all_possible_legend_items,
+    default=[item for item in st.session_state.visible_legend_items if item in all_possible_legend_items],
+    key="legend_selector"
+)
+st.session_state.visible_legend_items = selected_legends
+
 y_axis_suffix = " (in Today's Dollars)" if adjust_for_inflation else " ($)"
 
-# --- TOP ROW ---
-row1_col1, row1_col2 = st.columns(2)
-
-with row1_col1:
-    st.markdown(
-    """<p style='font-size:16px; font-weight: bold; text-align: center'>Resale Asking Price (Market Rate vs Fixed Rate vs AMI 
-    Rate Returns)<span class="tooltip-container">&#9432;<span class="tooltip-text">How much money a Homeowner could roughly expect
-     to ask for thier home - after a given time period - when selling on either the open market, or in accordance with the Resale 
-    Restriction of VALE Fixed or an AMI based formula</span></span></p>""",
-    unsafe_allow_html=True
+# Create a single Plotly figure with 2x2 subplots
+fig = make_subplots(
+    rows=2, cols=2,
+    subplot_titles=(
+        "Resale Asking Price",
+        "Homeowner Net Proceeds/Wealth",
+        "Continuing Affordability (Target AMI %)",
+        "CLT Community Equity Share"
+    ),
+    vertical_spacing=0.14,
+    horizontal_spacing=0.08
 )
-    sale_price_fig = go.Figure()
-    sale_price_fig.add_trace(go.Scatter(x=proj['Year'], y=proj['InitialMarketRateValue'], mode='lines+markers', name='Resale Price (Market)', line=dict(color='#3cb44b', width=2),  marker=dict(symbol='diamond', size=8), hovertemplate="Market - Year: %{x}<br>Home Price: %{y:$,.0f}<extra></extra>"))
-    sale_price_fig.add_trace(go.Scatter(x=proj['Year'], y=proj['InitialVALEFixedRateValue'], mode='lines+markers', name='Resale Price (Fixed)', line=dict(color='#F46A25', width=2),  marker=dict(symbol='star', size=8), hovertemplate="Fixed - Year: %{x}<br>Home Price: %{y:$,.0f}<extra></extra>"))
-    sale_price_fig.add_trace(go.Scatter(x=proj['Year'], y=proj['InitialAMIRateValue'], mode='lines+markers', name='Resale Price (AMI)', line=dict(color='#4363d8', width=2),  marker=dict(symbol='cross', size=8), hovertemplate="AMI - Year: %{x}<br>Home Price: %{y:$,.0f}<extra></extra>"))
-    sale_price_fig.update_layout(
-        xaxis_title='<b>Years</b>', 
-        yaxis_title=f'<b>Proceeds at Sale{y_axis_suffix}</b>',
-        margin=dict(l=40, r=20, t=20, b=40),
-        yaxis=dict(autorange=True),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=14), itemclick="toggle", itemdoubleclick="toggleothers")
-    )
-    st.plotly_chart(sale_price_fig, use_container_width=True)
 
-with row1_col2:
-    st.markdown(
-    """<p style='font-size:16px; font-weight: bold; text-align: center'>Homeowner Net Proceeds/Individual Wealth Built 
-    (Market vs Fixed vs AMI Net Proceeds)<span class="tooltip-container">&#9432;<span class="tooltip-text">This is the projected
-    earnings that a Home Owner could roughly expect to earn as wealth as a result of selling their home. This considers how much
-    they sell the house for - and subtracts out the 1) Cumulative Costs of Ownership (Mortgage Payments & Interest, Property Taxes, 
-    Home Insurance); 2) Transaction & Holding Costs (Selling Costs, Closing Costs, Maintenance & Capital Improvements); and 
-     any remaing 3) Liabilities (Remaining Mortgage Payoff, HELOC or Secondary Loans) </span></span></p>""",
-    unsafe_allow_html=True
-)
-    net_proceeds_fig = go.Figure()
-    net_proceeds_fig.add_trace(go.Scatter(x=proj['Year'], y=proj['ResaleNetWealthBuiltMarket'], mode='lines+markers', name='Equity Gained (Market)', line=dict(color='#3cb44b', width=2),  marker=dict(symbol='diamond', size=8), hovertemplate="Market - Year: %{x}<br>Equity Earned: %{y:$,.0f}<extra></extra>"))
-    net_proceeds_fig.add_trace(go.Scatter(x=proj['Year'], y=proj['ResaleNetWealthBuiltFixed'], mode='lines+markers', name='Equity Gained (Fixed)', line=dict(color='#F46A25', width=2),  marker=dict(symbol='star', size=8), hovertemplate="Fixed - Year: %{x}<br>Equity Earned: %{y:$,.0f}<extra></extra>"))
-    net_proceeds_fig.add_trace(go.Scatter(x=proj['Year'], y=proj['ResaleNetWealthBuiltAMI'], mode='lines+markers', name='Equity Gained (AMI)', line=dict(color='#4363d8', width=2),  marker=dict(symbol='cross', size=8), hovertemplate="AMI - Year: %{x}<br>Equity Earned: %{y:$,.0f}<extra></extra>"))
-    net_proceeds_fig.update_layout(
-        xaxis_title='<b>Years</b>', 
-        yaxis_title=f'<b>Net Proceeds / Wealth Built{y_axis_suffix}</b>',
-        margin=dict(l=40, r=20, t=20, b=40),
-        yaxis=dict(autorange=True),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=14), itemclick="toggle", itemdoubleclick="toggleothers")
-    )
-    st.plotly_chart(net_proceeds_fig, use_container_width=True)
-
-# --- BOTTOM ROW ---
-row2_col1, row2_col2 = st.columns(2)
-
-with row2_col1:
-    st.markdown(
-    """<p style='font-size:16px; font-weight: bold; text-align: center'>Continuing Affordability (Target AMI % Over Time)
-    <span class="tooltip-container">&#9432;<span class="tooltip-text">Tracks the AMI percentage needed for the second buyer to 
-    purchase the home without exceeding the housing cost burden, assuming the same downpayment and prevailing resale interest rate.</span></span></p>""",
-    unsafe_allow_html=True
-)
-    continuing_affordability_fig = go.Figure()
-    continuing_affordability_fig.add_trace(go.Scatter(x=proj['Year'], y=proj['ResaleContinuingAffordabilityPctOfAMIFixed'], mode='lines+markers', name='Required AMI % (Fixed Formula)', line=dict(color='#F46A25', width=2), marker=dict(symbol='star', size=8), hovertemplate="Fixed - Year: %{x}<br>AMI Required: %{y:.1f}%<extra></extra>"))
-    continuing_affordability_fig.add_trace(go.Scatter(x=proj['Year'], y=proj['ResaleContinuingAffordabilityPctOfAMIAMI'], mode='lines+markers', name='Required AMI % (AMI Formula)', line=dict(color='#4363d8', width=2), marker=dict(symbol='cross', size=8), hovertemplate="AMI - Year: %{x}<br>AMI Required: %{y:.1f}%<extra></extra>"))
+for idx, (scen_name, proj_df) in enumerate(scenario_results.items()):
+    c_color = SCENARIO_COLORS[idx % len(SCENARIO_COLORS)]
     
-    # Adds a dashed horizontal threshold line denoting the original affordability target
-    continuing_affordability_fig.add_hline(y=initial_affordability_pct_of_ami, line_dash="dash", line_color="gray", annotation_text=f"Initial Target ({initial_affordability_pct_of_ami}%)")
-    
-    continuing_affordability_fig.update_layout(
-        xaxis_title='<b>Years</b>', 
-        yaxis_title='<b>Required Area Median Income (AMI) %</b>',
-        margin=dict(l=40, r=20, t=20, b=40),
-        yaxis=dict(autorange=True),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=14))
-    )
-    st.plotly_chart(continuing_affordability_fig, use_container_width=True)
+    # 1. Market Traces
+    lg_market = f"{scen_name} (Market)"
+    vis_market = True if lg_market in st.session_state.visible_legend_items else "legendonly"
+    fig.add_trace(go.Scatter(x=proj_df['Year'], y=proj_df['InitialMarketRateValue'], mode='lines', name=lg_market, legendgroup=lg_market, showlegend=True, visible=vis_market, line=dict(color=c_color, dash='solid', width=2), hovertemplate=f"<b>{lg_market}: Year - %{{x}}</b><br>Home Price: $%{{y:,.0f}}<extra></extra>"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=proj_df['Year'], y=proj_df['ResaleNetWealthBuiltMarket'], mode='lines', name=lg_market, legendgroup=lg_market, showlegend=False, visible=vis_market, line=dict(color=c_color, dash='solid', width=2), hovertemplate=f"<b>{lg_market}: Year - %{{x}}</b><br>Wealth Built: $%{{y:,.0f}}<extra></extra>"), row=1, col=2)
 
-with row2_col2:
-    st.markdown(
-    """<p style='font-size:16px; font-weight: bold; text-align: center'>CLT Community Equity Share Over Time
-    <span class="tooltip-container">&#9432;<span class="tooltip-text">Tracks the expanding gap between the home's open-market 
-    value and its restricted affordable price. This represents the total capital/subsidy successfully retained within the community.</span></span></p>""",
-    unsafe_allow_html=True
+    # 2. Fixed Index Traces
+    lg_fixed = f"{scen_name} (Fixed)"
+    vis_fixed = True if lg_fixed in st.session_state.visible_legend_items else "legendonly"
+    fig.add_trace(go.Scatter(x=proj_df['Year'], y=proj_df['InitialVALEFixedRateValue'], mode='lines', name=lg_fixed, legendgroup=lg_fixed, showlegend=True, visible=vis_fixed, line=dict(color=c_color, dash='dash', width=2), hovertemplate=f"<b>{lg_fixed}: Year - %{{x}}</b><br>Home Price: $%{{y:,.0f}}<extra></extra>"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=proj_df['Year'], y=proj_df['ResaleNetWealthBuiltFixed'], mode='lines', name=lg_fixed, legendgroup=lg_fixed, showlegend=False, visible=vis_fixed, line=dict(color=c_color, dash='dash', width=2), hovertemplate=f"<b>{lg_fixed}: Year - %{{x}}</b><br>Wealth Built: $%{{y:,.0f}}<extra></extra>"), row=1, col=2)
+    fig.add_trace(go.Scatter(x=proj_df['Year'], y=proj_df['ResaleContinuingAffordabilityPctOfAMIFixed'], mode='lines', name=lg_fixed, legendgroup=lg_fixed, showlegend=False, visible=vis_fixed, line=dict(color=c_color, dash='dash', width=2), hovertemplate=f"<b>{lg_fixed}: Year - %{{x}}</b><br>AMI Required: %{{y:.1f}}%<extra></extra>"), row=2, col=1)
+    fig.add_trace(go.Scatter(x=proj_df['Year'], y=proj_df['ResaleCLTEquityAmountFixed'], mode='lines', name=lg_fixed, legendgroup=lg_fixed, showlegend=False, visible=vis_fixed, line=dict(color=c_color, dash='dash', width=2), hovertemplate=f"<b>{lg_fixed}: Year - %{{x}}</b><br>CLT Equity: $%{{y:,.0f}}<extra></extra>"), row=2, col=2)
+
+    # 3. AMI Traces
+    lg_ami = f"{scen_name} (AMI)"
+    vis_ami = True if lg_ami in st.session_state.visible_legend_items else "legendonly"
+    fig.add_trace(go.Scatter(x=proj_df['Year'], y=proj_df['InitialAMIRateValue'], mode='lines', name=lg_ami, legendgroup=lg_ami, showlegend=True, visible=vis_ami, line=dict(color=c_color, dash='dot', width=2), hovertemplate=f"<b>{lg_ami}: Year - %{{x}}</b><br>Home Price: $%{{y:,.0f}}<extra></extra>"), row=1, col=1)
+    fig.add_trace(go.Scatter(x=proj_df['Year'], y=proj_df['ResaleNetWealthBuiltAMI'], mode='lines', name=lg_ami, legendgroup=lg_ami, showlegend=False, visible=vis_ami, line=dict(color=c_color, dash='dot', width=2), hovertemplate=f"<b>{lg_ami}: Year - %{{x}}</b><br>Wealth Built: $%{{y:,.0f}}<extra></extra>"), row=1, col=2)
+    fig.add_trace(go.Scatter(x=proj_df['Year'], y=proj_df['ResaleContinuingAffordabilityPctOfAMIAMI'], mode='lines', name=lg_ami, legendgroup=lg_ami, showlegend=False, visible=vis_ami, line=dict(color=c_color, dash='dot', width=2), hovertemplate=f"<b>{lg_ami}: Year - %{{x}}</b><br>AMI Required: %{{y:.1f}}%<extra></extra>"), row=2, col=1)
+    fig.add_trace(go.Scatter(x=proj_df['Year'], y=proj_df['ResaleCLTEquityAmountAMI'], mode='lines', name=lg_ami, legendgroup=lg_ami, showlegend=False, visible=vis_ami, line=dict(color=c_color, dash='dot', width=2), hovertemplate=f"<b>{lg_ami}: Year - %{{x}}</b><br>CLT Equity: $%{{y:,.0f}}<extra></extra>"), row=2, col=2)
+
+# Horizontal target line on Continuing Affordability chart
+fig.add_hline(y=initial_affordability_pct_of_ami, line_dash="dash", line_color="gray", annotation_text="Initial Target", row=2, col=1)
+
+# Axis formatting
+fig.update_xaxes(title_text="<b>Years</b>")
+fig.update_yaxes(title_text=f"<b>Proceeds at Sale{y_axis_suffix}</b>", row=1, col=1)
+fig.update_yaxes(title_text=f"<b>Net Proceeds / Wealth Built{y_axis_suffix}</b>", row=1, col=2)
+fig.update_yaxes(title_text="<b>Required AMI %</b>", row=2, col=1)
+fig.update_yaxes(title_text=f"<b>Retained Subsidy / Equity{y_axis_suffix}</b>", row=2, col=2)
+
+# Layout & Top Legend configuration with generous top clearance
+fig.update_layout(
+    height=1080,
+    margin=dict(t=220, b=60, l=60, r=60),
+    legend=dict(
+        orientation="h",
+        yanchor="bottom",
+        y=1.12,
+        xanchor="center",
+        x=0.5,
+        font=dict(size=12),
+        borderwidth=1,
+        bordercolor="#888888",
+        entrywidthmode="fraction",
+        entrywidth=0.31
+    )
 )
-    clt_equity_fig = go.Figure()
-    clt_equity_fig.add_trace(go.Scatter(x=proj['Year'], y=proj['ResaleCLTEquityAmountFixed'], mode='lines+markers', name='CLT Equity (Fixed Formula)', line=dict(color='#F46A25', width=2), marker=dict(symbol='star', size=8), hovertemplate="Fixed - Year: %{x}<br>CLT Equity: %{y:$,.0f}<extra></extra>"))
-    clt_equity_fig.add_trace(go.Scatter(x=proj['Year'], y=proj['ResaleCLTEquityAmountAMI'], mode='lines+markers', name='CLT Equity (AMI Formula)', line=dict(color='#4363d8', width=2), marker=dict(symbol='cross', size=8), hovertemplate="AMI - Year: %{x}<br>CLT Equity: %{y:$,.0f}<extra></extra>"))
-    clt_equity_fig.update_layout(
-        xaxis_title='<b>Years</b>', 
-        yaxis_title=f'<b>Retained Subsidy / CLT Equity{y_axis_suffix}</b>',
-        margin=dict(l=40, r=20, t=20, b=40),
-        yaxis=dict(autorange=True),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=14))
-    )
-    st.plotly_chart(clt_equity_fig, use_container_width=True)
 
-st.subheader("Yearly Proceeds Detail")
-saved_cols = ['Year', 'InitialVALEFixedRateValue', 'ResaleNetWealthBuiltFixed', 'GrossAppreciationFixed', 'PrincipalRepaidAffordable', 'BuyerClosingCostsAffordable', 'SellerClosingCostsFixed']
-st.dataframe(proj[saved_cols], hide_index=True)
-
-
-# Export
-csv = proj.to_csv(index=False).encode('utf-8')
-st.download_button("Download projections CSV", data=csv, file_name='projections.csv', mime='text/csv')
+st.plotly_chart(fig, use_container_width=True)
 # END Section 4 #############################################################################################
 
 
 
 #############################################################################################################
-# Section 5: Disclaimers and Notes
+# Section 5: Data Export
+#############################################################################################################
+st.markdown("<h3 style='text-align: center; margin-top: 2rem; margin-bottom: 1rem;'>Export Simulation Data</h3>", unsafe_allow_html=True)
+
+# Generate Excel file in memory with a separate sheet for each scenario
+buffer = io.BytesIO()
+with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+    for scen_name, df in scenario_results.items():
+        # Excel enforces a strict 31-character limit on sheet names
+        safe_sheet_name = str(scen_name).replace("/", "-").replace("\\", "-")[:31] 
+        df.to_excel(writer, sheet_name=safe_sheet_name, index=False)
+
+# Render the download button
+col1, col2, col3 = st.columns([1, 2, 1])
+with col2:
+    st.download_button(
+        label="📥 Download All Scenarios to Excel",
+        data=buffer.getvalue(),
+        file_name="Valley_Alliance_for_Land_Equity_Scenarios.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+# END Section 5 #############################################################################################
+
+
+
+#############################################################################################################
+# Section 6: Disclaimers and Notes
 #############################################################################################################
 
 st.markdown(
@@ -747,4 +613,4 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-# END Section 5 #############################################################################################
+# END Section 6 #############################################################################################
