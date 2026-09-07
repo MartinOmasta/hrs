@@ -3,7 +3,6 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-import io
 from finance import compute_projections, HOUSEHOLD_SIZE_FACTORS
 
 st.set_page_config(page_title="VALE Housing Resale Simulator", layout="wide")
@@ -26,19 +25,10 @@ st.markdown("""
             background-color: #2D3748 !important; /* Sleek slate-dark gray */
             color: #FFFFFF !important;
         }
-        
-        /* OVERRIDE: Force dropdown menus to expand to the width of their content */
-        div[data-baseweb="popover"] > div {
-            width: max-content !important;
-            white-space: nowrap !important;
-            min-width: 100% !important; /* Ensures it never gets smaller than the collapsed selectbox */
-        }
     </style>
     """, unsafe_allow_html=True)
 
 st.title("VALE Housing Resale Simulator (HRS) - Prototype")
-
-
 
 #############################################################################################################
 # Section 1: Sidebar Setup
@@ -87,8 +77,6 @@ with st.sidebar.expander("**⚙️Simulation**", expanded=True):
     cost_model = st.radio("Housing Cost Model", options=["Realistic (Market-Tied & Static Fees)", "Idealized (Flat Affordability)"], index=0, help="Realistic ties insurance to market value and calculates actual FHA/Conventional PMI drop-offs. Idealized perfectly scales all costs with AMI.")
     adjust_for_inflation = st.checkbox("Adjust Values for Inflation (Present Value)", value=False, help="Display future financial returns in today's purchasing power.")
     general_inflation_rate = st.number_input("General Economic Inflation Rate (%)", value=2.5, step=0.1, help="The assumed annual rate of general economic inflation used to calculate present value.")
-# END Section 1 #############################################################################################
-
 
 
 #############################################################################################################
@@ -238,9 +226,6 @@ for var in st.session_state.active_variables:
             st.session_state.matrix_data[sc][var] = new_val
 
 st.markdown("---")
-# END Section 1.5 ###########################################################################################
-
-
 
 #############################################################################################################
 # Section 2: Run Scenarios & Capture Plot Traces
@@ -294,9 +279,6 @@ for col_name in scenarios_to_run:
         scenario_results[col_name] = compute_projections(**kwargs)
     except Exception as e:
         st.error(f"Error computing Scenario: {col_name}. Missing or invalid matrix parameter: {e}")
-# END Section 2 #############################################################################################
-
-
 
 #############################################################################################################
 # Section 3: Show fundamentals of Affordability Metrics Widget
@@ -453,9 +435,6 @@ if selected_scenario_metrics and selected_scenario_metrics in scenario_results:
     </div>
     """
     st.markdown(html_content, unsafe_allow_html=True)
-# END Section 3 #############################################################################################
-
-
 
 #############################################################################################################
 # Section 4: Unified 2x2 Plotly Grid with Persistent Legend & Layout Spacing
@@ -549,39 +528,11 @@ fig.update_layout(
 )
 
 st.plotly_chart(fig, use_container_width=True)
-# END Section 4 #############################################################################################
 
 
 
 #############################################################################################################
-# Section 5: Data Export
-#############################################################################################################
-st.markdown("<h3 style='text-align: center; margin-top: 2rem; margin-bottom: 1rem;'>Export Simulation Data</h3>", unsafe_allow_html=True)
-
-# Generate Excel file in memory with a separate sheet for each scenario
-buffer = io.BytesIO()
-with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-    for scen_name, df in scenario_results.items():
-        # Excel enforces a strict 31-character limit on sheet names
-        safe_sheet_name = str(scen_name).replace("/", "-").replace("\\", "-")[:31] 
-        df.to_excel(writer, sheet_name=safe_sheet_name, index=False)
-
-# Render the download button
-col1, col2, col3 = st.columns([1, 2, 1])
-with col2:
-    st.download_button(
-        label="📥 Download All Scenarios to Excel",
-        data=buffer.getvalue(),
-        file_name="Valley_Alliance_for_Land_Equity_Scenarios.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
-    )
-# END Section 5 #############################################################################################
-
-
-
-#############################################################################################################
-# Section 6: Disclaimers and Notes
+# Section 5: Disclaimers and Notes
 #############################################################################################################
 
 st.markdown(
@@ -613,4 +564,4 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-# END Section 6 #############################################################################################
+# END Section 5 #############################################################################################
