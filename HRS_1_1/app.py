@@ -523,7 +523,7 @@ fig.update_layout(
         borderwidth=1,
         bordercolor="#888888",
         entrywidthmode="fraction",
-        entrywidth=0.31
+        entrywidth=0.41
     )
 )
 
