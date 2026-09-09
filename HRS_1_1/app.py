@@ -25,10 +25,97 @@ st.markdown("""
             background-color: #2D3748 !important; /* Sleek slate-dark gray */
             color: #FFFFFF !important;
         }
+        
+        /* --- KITCHEN SINK DROPDOWN MENU FIXES --- */
+        /* 1. Target the popover container */
+        div[data-baseweb="popover"] > div,
+        div[data-baseweb="popover"] > div > div,
+        div[data-testid="stPopoverBody"] {
+            width: max-content !important;
+            min-width: 450px !important;
+            max-width: 95vw !important;
+        }
+        
+        /* 2. Target the unordered list inside the popover */
+        ul[data-baseweb="menu"],
+        div[data-baseweb="popover"] ul {
+            width: max-content !important;
+            min-width: 100% !important;
+            overflow-x: hidden !important;
+        }
+        
+        /* 3. Target the list items to allow full text display (wrap or expand) */
+        li[data-baseweb="menu-item"],
+        div[data-baseweb="popover"] li {
+            width: max-content !important;
+            min-width: 100% !important;
+            white-space: normal !important; /* Allows wrapping instead of truncating */
+            word-wrap: break-word !important;
+            overflow: visible !important;
+            text-overflow: clip !important;
+            padding-right: 20px !important;
+        }
+        
+        /* 4. Target spans inside the list items */
+        li[data-baseweb="menu-item"] span,
+        div[data-baseweb="popover"] li span,
+        div[data-baseweb="popover"] span[title] {
+            white-space: normal !important;
+            overflow: visible !important;
+            text-overflow: clip !important;
+        }
+        
+        /* 5. Force the widget's closed input display box to show text if possible */
+        div[data-baseweb="select"] div[text-overflow="ellipsis"] {
+            text-overflow: clip !important;
+            white-space: normal !important;
+            overflow: visible !important;
+        }
     </style>
     """, unsafe_allow_html=True)
 
 st.title("VALE Housing Resale Simulator (HRS) - Prototype")
+
+#############################################################################################################
+# Color Definitions & Handlers
+#############################################################################################################
+SCENARIO_COLOR_OPTIONS = {
+    '💙 Blue': '#636EFA',
+    '❤️ Red': '#EF553B',
+    '💚 Green': '#00CC96',
+    '💜 Purple': '#AB63FA',
+    '🧡 Orange': '#FFA15A',
+    '🩵 Cyan': '#19D3F3'
+}
+
+SCENARIO_COLORS_LIST = list(SCENARIO_COLOR_OPTIONS.keys())
+
+def handle_color_change(changed_scen, old_color):
+    """Handles color swaps and reassignments dynamically via on_change callback."""
+    new_color = st.session_state[f"color_select_{changed_scen}"]
+    if new_color == old_color:
+        return
+    
+    # Identify if another scenario is already using the newly selected color
+    conflicts = [s for s in st.session_state.scenarios if s != changed_scen and st.session_state.scenario_colors.get(s) == new_color]
+    
+    if conflicts:
+        conflict_scen = conflicts[0]
+        if len(st.session_state.scenarios) < 6:
+            # Reassign the conflicting scenario to an unused color
+            used_colors = [st.session_state.scenario_colors[s] for s in st.session_state.scenarios if s != conflict_scen and s != changed_scen]
+            used_colors.append(new_color)
+            available = [c for c in SCENARIO_COLORS_LIST if c not in used_colors]
+            if available:
+                st.session_state.scenario_colors[conflict_scen] = available[0]
+                st.session_state[f"color_select_{conflict_scen}"] = available[0]
+        else:
+            # Swap colors between the two scenarios
+            st.session_state.scenario_colors[conflict_scen] = old_color
+            st.session_state[f"color_select_{conflict_scen}"] = old_color
+    
+    # Update state for the scenario that triggered the change
+    st.session_state.scenario_colors[changed_scen] = new_color
 
 #############################################################################################################
 # Section 1: Sidebar Setup
@@ -126,7 +213,6 @@ if "scenarios" not in st.session_state:
                                   'Flat Housing Market', 
                                   'Housing Market Price Spike', 
                                   'Housing Price Bust', 
-                                  #'ANY AND ALL', 
                                   'Wage Stagnation & Housing Prices Spike']
     
 if "matrix_data" not in st.session_state:
@@ -136,8 +222,7 @@ if "matrix_data" not in st.session_state:
         'Flat Housing Market': {"initial_holding_period_years": 40, "initial_market_home_price_inflation_rate": 1.0, "initial_area_median_income_inflation": 3.0, "general_inflation_rate": 2.5, "initial_mortgage_rate": 6.0, "resale_mortgage_rate": 6.0},
         'Housing Market Price Spike': {"initial_holding_period_years": 40, "initial_market_home_price_inflation_rate": 9.0, "initial_area_median_income_inflation": 4.0, "general_inflation_rate": 2.5, "initial_mortgage_rate": 6.0, "resale_mortgage_rate": 6.0},
         'Housing Price Bust': {"initial_holding_period_years": 40, "initial_market_home_price_inflation_rate": -4.0, "initial_area_median_income_inflation": 3.0, "general_inflation_rate": 2.5, "initial_mortgage_rate": 6.0, "resale_mortgage_rate": 6.0},
-        #'ANY AND ALL': {"initial_holding_period_years": 40, "initial_market_home_price_inflation_rate": 6.0, "initial_area_median_income_inflation": 4.0, "general_inflation_rate": 2.0, "initial_mortgage_rate": 6.0, "resale_mortgage_rate": 6.0},
-        'Wage Stagnation & Housing Prices Spike': {"initial_holding_period_years": 40, "initial_market_home_price_inflation_rate": 12.0, "initial_area_median_income_inflation": 0.5, "general_inflation_rate": 2.5, "initial_mortgage_rate": 12.0, "resale_mortgage_rate": 6.0}
+        'Wage Stagnation & Housing Prices Spike': {"initial_holding_period_years": 40, "initial_market_home_price_inflation_rate": 9.0, "initial_area_median_income_inflation": 0.5, "general_inflation_rate": 2.5, "initial_mortgage_rate": 12.0, "resale_mortgage_rate": 6.0}
     }
     for sc, vals in defaults_mapping.items():
         st.session_state.matrix_data[sc] = vals
@@ -149,30 +234,168 @@ if "active_variables" not in st.session_state:
         "initial_mortgage_rate", "resale_mortgage_rate"
     ]
 
-# 3. Controls to Add/Remove Scenarios and Variables
-control_cols = st.columns([1, 1, 1.5, 0.5])
+if "scenario_colors" not in st.session_state:
+    st.session_state.scenario_colors = {}
+    for i, sc in enumerate(st.session_state.scenarios):
+        st.session_state.scenario_colors[sc] = SCENARIO_COLORS_LIST[i % len(SCENARIO_COLORS_LIST)]
 
-with control_cols[0]:
+# Initialize trackers to retain non-visible CSV uploaded variables for specific scenarios 
+if "uploaded_scenarios" not in st.session_state:
+    st.session_state.uploaded_scenarios = []
+
+if "csv_uploaded_keys" not in st.session_state:
+    st.session_state.csv_uploaded_keys = {}
+
+# Initialize global active legend items tracker
+if "visible_legend_items" not in st.session_state:
+    st.session_state.visible_legend_items = []
+    for sc in st.session_state.scenarios:
+        st.session_state.visible_legend_items.extend([f"{sc} (Market)", f"{sc} (Fixed)", f"{sc} (AMI)"])
+
+# 3. Controls to Add/Remove Scenarios and Variables
+
+# Row 1: Scenario Controls
+row1_cols = st.columns(3)
+with row1_cols[0]:
     with st.form("add_scen_form", clear_on_submit=True):
-        new_scen = st.text_input("New Scenario Name", placeholder="E.g., High Taxes")
+        new_scen = st.text_input("New Scenario Name (Maximum of 6 Scenarios):", placeholder="E.g., High Taxes")
         submitted = st.form_submit_button("➕ Add Scenario")
         if submitted:
             if len(st.session_state.scenarios) >= 6:
                 st.warning("You've reached the maximum of 6 scenarios! Please remove one before adding another.", icon="⚠️")
             elif new_scen and new_scen not in st.session_state.scenarios:
                 st.session_state.scenarios.append(new_scen)
-                st.session_state.matrix_data[new_scen] = st.session_state.matrix_data[st.session_state.scenarios[0]].copy()
+                
+                # Copy ONLY the active variables from scenario 0 so that unlisted variables track sidebar defaults
+                new_scen_data = {}
+                for var in st.session_state.active_variables:
+                    if var in st.session_state.matrix_data[st.session_state.scenarios[0]]:
+                        new_scen_data[var] = st.session_state.matrix_data[st.session_state.scenarios[0]][var]
+                st.session_state.matrix_data[new_scen] = new_scen_data
+                
+                # Intelligent color assignment upon addition
+                used_colors = list(st.session_state.scenario_colors.values())
+                available_colors = [c for c in SCENARIO_COLORS_LIST if c not in used_colors]
+                assigned_color = available_colors[0] if available_colors else SCENARIO_COLORS_LIST[(len(st.session_state.scenarios) - 1) % len(SCENARIO_COLORS_LIST)]
+                
+                st.session_state.scenario_colors[new_scen] = assigned_color
+                st.session_state[f"color_select_{new_scen}"] = assigned_color
+                
+                # Auto-append new scenario to active legend items
+                st.session_state.visible_legend_items.extend([f"{new_scen} (Market)", f"{new_scen} (Fixed)", f"{new_scen} (AMI)"])
                 st.rerun()
 
-with control_cols[1]:
+with row1_cols[1]:
+    uploaded_file = st.file_uploader("Upload Scenario (.csv)", type=["csv"], label_visibility="visible")
+    if uploaded_file is not None:
+        if st.button("📥 Upload Scenario", use_container_width=True):
+            try:
+                df_in = pd.read_csv(uploaded_file)
+                if "Scenario_Name" in df_in.columns:
+                    scenarios_in_file = df_in["Scenario_Name"].unique()
+                else:
+                    scenarios_in_file = ["Uploaded Scenario"]
+                    
+                for scen_in in scenarios_in_file:
+                    if len(st.session_state.scenarios) >= 6:
+                        st.warning("Reached maximum of 6 scenarios. Some were skipped.")
+                        break
+                        
+                    base_name = str(scen_in)
+                    
+                    scen_name_to_add = base_name
+                    counter = 1
+                    while scen_name_to_add in st.session_state.scenarios:
+                        scen_name_to_add = f"{base_name} {counter}"
+                        counter += 1
+                    
+                    st.session_state.scenarios.append(scen_name_to_add)
+                    st.session_state.matrix_data[scen_name_to_add] = {}
+                    
+                    if scen_name_to_add not in st.session_state.uploaded_scenarios:
+                        st.session_state.uploaded_scenarios.append(scen_name_to_add)
+                    st.session_state.csv_uploaded_keys[scen_name_to_add] = []
+                    
+                    # Assign available color
+                    used_colors = list(st.session_state.scenario_colors.values())
+                    available_colors = [c for c in SCENARIO_COLORS_LIST if c not in used_colors]
+                    assigned_color = available_colors[0] if available_colors else SCENARIO_COLORS_LIST[(len(st.session_state.scenarios) - 1) % len(SCENARIO_COLORS_LIST)]
+                    
+                    st.session_state.scenario_colors[scen_name_to_add] = assigned_color
+                    st.session_state[f"color_select_{scen_name_to_add}"] = assigned_color
+                    
+                    # Auto-append uploaded scenario to active legend items
+                    st.session_state.visible_legend_items.extend([f"{scen_name_to_add} (Market)", f"{scen_name_to_add} (Fixed)", f"{scen_name_to_add} (AMI)"])
+                    
+                    if "Scenario_Name" in df_in.columns:
+                        row_data = df_in[df_in["Scenario_Name"] == scen_in].iloc[0]
+                    else:
+                        row_data = df_in.iloc[0]
+                    
+                    # Apply ALL variables found in the CSV file regardless of active visibility 
+                    for var in ALL_VARIABLES.keys():
+                        if var in row_data.index:
+                            val = row_data[var]
+                            if pd.isna(val):
+                                continue # Skip mapping NaN to allow fallback
+                                
+                            st.session_state.csv_uploaded_keys[scen_name_to_add].append(var)
+                            var_type = ALL_VARIABLES[var]["type"]
+                            
+                            if var_type == "checkbox":
+                                if str(val).lower() in ['false', '0', 'no', 'nan', 'none']:
+                                    st.session_state.matrix_data[scen_name_to_add][var] = False
+                                else:
+                                    st.session_state.matrix_data[scen_name_to_add][var] = True
+                            elif var_type == "number":
+                                try:
+                                    if isinstance(ALL_VARIABLES[var]["default"], float):
+                                        st.session_state.matrix_data[scen_name_to_add][var] = float(val)
+                                    else:
+                                        st.session_state.matrix_data[scen_name_to_add][var] = int(float(val))
+                                except ValueError:
+                                    pass # Keep default if parsing fails
+                            elif var_type == "select":
+                                if val in ALL_VARIABLES[var]["options"]:
+                                    st.session_state.matrix_data[scen_name_to_add][var] = val
+                                else:
+                                    try:
+                                        num_val = int(float(val))
+                                        if num_val in ALL_VARIABLES[var]["options"]:
+                                            st.session_state.matrix_data[scen_name_to_add][var] = num_val
+                                    except:
+                                        pass
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to read CSV file: {e}")
+
+with row1_cols[2]:
     with st.form("del_scen_form"):
-        to_remove_scen = st.selectbox("Remove Scenario", options=st.session_state.scenarios)
+        to_remove_scen = st.selectbox("Remove Scenario:", options=st.session_state.scenarios)
         if st.form_submit_button("🗑️ Remove Scenario") and len(st.session_state.scenarios) > 1:
             st.session_state.scenarios.remove(to_remove_scen)
             del st.session_state.matrix_data[to_remove_scen]
+            if to_remove_scen in st.session_state.scenario_colors:
+                del st.session_state.scenario_colors[to_remove_scen]
+            if f"color_select_{to_remove_scen}" in st.session_state:
+                del st.session_state[f"color_select_{to_remove_scen}"]
+            if to_remove_scen in st.session_state.uploaded_scenarios:
+                st.session_state.uploaded_scenarios.remove(to_remove_scen)
+            if to_remove_scen in st.session_state.csv_uploaded_keys:
+                del st.session_state.csv_uploaded_keys[to_remove_scen]
+                
+            # Strip out removed scenario items from active legend list
+            st.session_state.visible_legend_items = [
+                item for item in st.session_state.visible_legend_items 
+                if not item.startswith(f"{to_remove_scen} (")
+            ]
             st.rerun()
 
-with control_cols[2]:
+st.write("") # Spacer
+
+# Row 2: Variable Controls
+row2_cols = st.columns(2)
+with row2_cols[0]:
     with st.form("add_var_form"):
         available_vars = {k: v["label"] for k, v in ALL_VARIABLES.items() if k not in st.session_state.active_variables}
         new_var_key = st.selectbox(
@@ -183,13 +406,15 @@ with control_cols[2]:
         if st.form_submit_button("➕ Add Variable Row") and new_var_key:
             st.session_state.active_variables.append(new_var_key)
             for sc in st.session_state.scenarios:
-                st.session_state.matrix_data[sc][new_var_key] = ALL_VARIABLES[new_var_key]["default"]
+                # Set fallback default ONLY if a background value wasn't already stored by a CSV upload 
+                if new_var_key not in st.session_state.matrix_data[sc]:
+                    st.session_state.matrix_data[sc][new_var_key] = ALL_VARIABLES[new_var_key]["default"]
             st.rerun()
 
-with control_cols[3]:
+with row2_cols[1]:
     with st.form("del_var_form"):
-        to_remove_var = st.selectbox("Remove Row", options=st.session_state.active_variables, format_func=lambda x: ALL_VARIABLES[x]["label"], label_visibility="collapsed")
-        if st.form_submit_button("🗑️ Remove"):
+        to_remove_var = st.selectbox("Remove Row Variable:", options=st.session_state.active_variables, format_func=lambda x: ALL_VARIABLES[x]["label"])
+        if st.form_submit_button("🗑️ Remove Row Variable"):
             st.session_state.active_variables.remove(to_remove_var)
             st.rerun()
 
@@ -201,6 +426,27 @@ grid_cols[0].markdown("**Variable**")
 for i, sc in enumerate(st.session_state.scenarios):
     grid_cols[i+1].markdown(f"**{sc}**")
 
+# Scenario Color Row 
+color_cols = st.columns([1.5] + [1] * len(st.session_state.scenarios))
+color_cols[0].markdown("<div style='padding-top:10px; font-size:0.9em; color:#4a4a4a; font-weight: bold;'>Scenario Color</div>", unsafe_allow_html=True)
+for i, sc in enumerate(st.session_state.scenarios):
+    with color_cols[i+1]:
+        # Pre-seed session state for widget to maintain flawless sync during swaps
+        if f"color_select_{sc}" not in st.session_state:
+            st.session_state[f"color_select_{sc}"] = st.session_state.scenario_colors.get(sc, SCENARIO_COLORS_LIST[i % len(SCENARIO_COLORS_LIST)])
+            
+        current_color_name = st.session_state[f"color_select_{sc}"]
+            
+        st.selectbox(
+            "Color",
+            options=SCENARIO_COLORS_LIST,
+            key=f"color_select_{sc}",
+            label_visibility="collapsed",
+            on_change=handle_color_change,
+            args=(sc, current_color_name)
+        )
+
+# Standard Variable Rows
 for var in st.session_state.active_variables:
     var_info = ALL_VARIABLES[var]
     grid_cols = st.columns([1.5] + [1] * len(st.session_state.scenarios))
@@ -264,21 +510,79 @@ base_kwargs = {
     "general_inflation_rate": (general_inflation_rate / 100.0)
 }
 
+# Preserve the raw unconverted base vars purely for cleanly exporting matching inputs to CSV
+raw_base_kwargs = base_kwargs.copy()
+raw_base_kwargs["general_inflation_rate"] = general_inflation_rate 
+
 scenario_results = {}
-SCENARIO_COLORS = ['#636EFA', '#EF553B', '#00CC96', '#AB63FA', '#FFA15A', '#19D3F3']
 scenarios_to_run = st.session_state.scenarios[:6]
 
 for col_name in scenarios_to_run:
     kwargs = base_kwargs.copy()
     scenario_overrides = st.session_state.matrix_data.get(col_name, {})
     for var_key, val in scenario_overrides.items():
+        # Apply the value if it's explicitly active in the matrix, OR if it's a non-visible key pulled from an uploaded CSV
         if var_key in st.session_state.active_variables:
+            kwargs[var_key] = val
+        elif col_name in st.session_state.uploaded_scenarios and var_key in st.session_state.csv_uploaded_keys.get(col_name, []):
             kwargs[var_key] = val
 
     try:
         scenario_results[col_name] = compute_projections(**kwargs)
     except Exception as e:
         st.error(f"Error computing Scenario: {col_name}. Missing or invalid matrix parameter: {e}")
+
+# Compile Scenario Data for Export 
+st.markdown("#### Download Scenarios")
+dl_col1, dl_col2 = st.columns([1, 2])
+with dl_col1:
+    select_all_dl = st.checkbox("Select All Scenarios for Download", value=True)
+
+all_available_scenarios = list(scenario_results.keys())
+with dl_col2:
+    if select_all_dl:
+        selected_for_dl = st.multiselect("Select scenarios to download:", options=all_available_scenarios, default=all_available_scenarios)
+    else:
+        selected_for_dl = st.multiselect("Select scenarios to download:", options=all_available_scenarios, default=[])
+
+all_scenarios_df_list = []
+for col_name in selected_for_dl:
+    if col_name in scenario_results:
+        proj_df = scenario_results[col_name]
+        df_copy = proj_df.copy()
+        df_copy.insert(0, "Scenario_Name", col_name)
+        
+        scen_raw_kwargs = raw_base_kwargs.copy()
+        scenario_overrides = st.session_state.matrix_data.get(col_name, {})
+        
+        # Save active variables and hidden CSV-uploaded variables for the scenario into the CSV
+        for var_key, val in scenario_overrides.items():
+            if var_key in st.session_state.active_variables:
+                scen_raw_kwargs[var_key] = val
+            elif col_name in st.session_state.uploaded_scenarios and var_key in st.session_state.csv_uploaded_keys.get(col_name, []):
+                scen_raw_kwargs[var_key] = val
+                
+        # Append all scenario parameter variables to the dataframe columns
+        for k, v in scen_raw_kwargs.items():
+            df_copy[k] = v
+            
+        all_scenarios_df_list.append(df_copy)
+    
+if all_scenarios_df_list:
+    combined_df = pd.concat(all_scenarios_df_list, ignore_index=True)
+    csv_data = combined_df.to_csv(index=False).encode('utf-8')
+    
+    st.download_button(
+        label="💾 Download Selected Scenarios Data to CSV",
+        data=csv_data,
+        file_name="vale_housing_scenarios.csv",
+        mime="text/csv",
+        help="Saves all computed projections and current matrix parameters to a standard .csv file. This file can be re-uploaded to load scenario parameters."
+    )
+elif len(scenario_results) > 0:
+    st.info("Select at least one scenario to enable downloading.")
+
+st.markdown("---")
 
 #############################################################################################################
 # Section 3: Show fundamentals of Affordability Metrics Widget
@@ -446,11 +750,6 @@ all_possible_legend_items = []
 for scen in scenario_results.keys():
     all_possible_legend_items.extend([f"{scen} (Market)", f"{scen} (Fixed)", f"{scen} (AMI)"])
 
-# Initialize legend state in st.session_state
-if "visible_legend_items" not in st.session_state:
-    st.session_state.visible_legend_items = all_possible_legend_items.copy()
-
-# Add Multiselect State Filter (Redundant reset button removed)
 selected_legends = st.multiselect(
     "Active Legend Items (Preserved across scenario updates):",
     options=all_possible_legend_items,
@@ -458,6 +757,8 @@ selected_legends = st.multiselect(
     key="legend_selector"
 )
 st.session_state.visible_legend_items = selected_legends
+
+show_scenario_targets = st.checkbox("Show Scenario-Specific Target AMI Lines", value=False, help="Display a targeted 'X' line matching the color of each scenario's Prospective Buyer Income Target.")
 
 y_axis_suffix = " (in Today's Dollars)" if adjust_for_inflation else " ($)"
 
@@ -471,11 +772,18 @@ fig = make_subplots(
         "CLT Community Equity Share"
     ),
     vertical_spacing=0.14,
-    horizontal_spacing=0.08
+    horizontal_spacing=0.14
 )
 
+# Increase font size (e.g., to 18)
+fig.update_annotations(font_size=18)
+
+# Make all subplot titles bold
+fig.for_each_annotation(lambda a: a.update(text=f"<b>{a.text}</b>"))
+
 for idx, (scen_name, proj_df) in enumerate(scenario_results.items()):
-    c_color = SCENARIO_COLORS[idx % len(SCENARIO_COLORS)]
+    c_color_name = st.session_state.scenario_colors.get(scen_name, '🟦 Blue')
+    c_color = SCENARIO_COLOR_OPTIONS.get(c_color_name, '#636EFA')
     
     # 1. Market Traces
     lg_market = f"{scen_name} (Market)"
@@ -499,8 +807,38 @@ for idx, (scen_name, proj_df) in enumerate(scenario_results.items()):
     fig.add_trace(go.Scatter(x=proj_df['Year'], y=proj_df['ResaleContinuingAffordabilityPctOfAMIAMI'], mode='lines', name=lg_ami, legendgroup=lg_ami, showlegend=False, visible=vis_ami, line=dict(color=c_color, dash='dot', width=2), hovertemplate=f"<b>{lg_ami}: Year - %{{x}}</b><br>AMI Required: %{{y:.1f}}%<extra></extra>"), row=2, col=1)
     fig.add_trace(go.Scatter(x=proj_df['Year'], y=proj_df['ResaleCLTEquityAmountAMI'], mode='lines', name=lg_ami, legendgroup=lg_ami, showlegend=False, visible=vis_ami, line=dict(color=c_color, dash='dot', width=2), hovertemplate=f"<b>{lg_ami}: Year - %{{x}}</b><br>CLT Equity: $%{{y:,.0f}}<extra></extra>"), row=2, col=2)
 
-# Horizontal target line on Continuing Affordability chart
-fig.add_hline(y=initial_affordability_pct_of_ami, line_dash="dash", line_color="gray", annotation_text="Initial Target", row=2, col=1)
+    # Add dynamically targeted line using 'X' markers when the checkbox is enabled
+    if show_scenario_targets:
+        target_val = initial_affordability_pct_of_ami
+        if "initial_affordability_pct_of_ami" in st.session_state.active_variables:
+            target_val = st.session_state.matrix_data.get(scen_name, {}).get("initial_affordability_pct_of_ami", initial_affordability_pct_of_ami)
+        
+        fig.add_trace(go.Scatter(
+            x=proj_df['Year'],
+            y=[target_val] * len(proj_df['Year']),
+            mode='lines+markers',
+            marker=dict(symbol='x', color=c_color, size=6),
+            line=dict(color=c_color, width=1, dash='dot'),
+            name=f"{scen_name} Target",
+            showlegend=False,
+            hoverinfo='skip'
+        ), row=2, col=1)
+        
+        fig.add_annotation(
+            x=proj_df['Year'].max(),
+            y=target_val,
+            text=f"{target_val:g}% Target",
+            showarrow=False,
+            font=dict(color=c_color, size=12),
+            xanchor='right',
+            yanchor='bottom',
+            yshift=4,
+            row=2, col=1
+        )
+
+# Render standard gray line baseline if custom targets aren't toggled
+if not show_scenario_targets:
+    fig.add_hline(y=initial_affordability_pct_of_ami, line_dash="dash", line_color="gray", annotation_text="Initial Target", row=2, col=1)
 
 # Axis formatting
 fig.update_xaxes(title_text="<b>Years</b>")
@@ -528,8 +866,6 @@ fig.update_layout(
 )
 
 st.plotly_chart(fig, use_container_width=True)
-
-
 
 #############################################################################################################
 # Section 5: Disclaimers and Notes
