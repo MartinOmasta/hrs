@@ -339,6 +339,11 @@ with row1_cols[1]:
                             if pd.isna(val):
                                 continue # Skip mapping NaN to allow fallback
                                 
+                            # Prevent global simulation parameters from becoming hidden overrides 
+                            # so the sidebar toggles continue to work for uploaded scenarios.
+                            if var in ["adjust_for_inflation", "general_inflation_rate", "subtract_sunk_costs", "cost_model", "vale_resale_capped"]:
+                                continue
+
                             st.session_state.csv_uploaded_keys[scen_name_to_add].append(var)
                             var_type = ALL_VARIABLES[var]["type"]
                             
@@ -507,12 +512,11 @@ base_kwargs = {
     "subtract_sunk_costs": subtract_sunk_costs,
     "cost_model": cost_model,
     "adjust_for_inflation": adjust_for_inflation,
-    "general_inflation_rate": (general_inflation_rate / 100.0)
+    "general_inflation_rate": general_inflation_rate # FIX: Passed directly without double division
 }
 
 # Preserve the raw unconverted base vars purely for cleanly exporting matching inputs to CSV
 raw_base_kwargs = base_kwargs.copy()
-raw_base_kwargs["general_inflation_rate"] = general_inflation_rate 
 
 scenario_results = {}
 scenarios_to_run = st.session_state.scenarios[:6]
